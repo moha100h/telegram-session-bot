@@ -1,69 +1,37 @@
 import json
 import os
-import uuid
-import asyncio
-import aiofiles
-from datetime import datetime
-from redis.asyncio import Redis
-from config import DATA_DIR
+import logging
+from typing import Optional
 
-TASK_FILE  = os.path.join(DATA_DIR, "tasks.json")
-TASK_QUEUE = "tsb:task_queue"
+logger = logging.getLogger("task_manager")
 
-_lock = asyncio.Lock()
+DATA_DIR  = os.getenv("DATA_DIR", "/app/data")
+TASK_FILE = os.path.join(DATA_DIR, "tasks.json")
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
-async def load_tasks() -> dict:
-    if not os.path.exists(TASK_FILE):
-        return {}
+def _load() -> dict:
     try:
-        async with aiofiles.open(TASK_FILE, "r") as f:
-            return json.loads(await f.read())
+        if os.path.exists(TASK_FILE):
+            with open(TASK_FILE, "r") as f:
+                return json.load(f)
     except Exception:
-        return {}
-
-
-async def save_tasks(tasks: dict):
-    async with _lock:
-        async with aiofiles.open(TASK_FILE, "w") as f:
-            await f.write(json.dumps(tasks, ensure_ascii=False, indent=2))
-
-
-async def create_task(redis: Redis, task: dict) -> str:
-    tid = str(uuid.uuid4())[:8]
-    task.update({
-        "id": tid,
-        "status": "pending",
-        "done": 0,
-        "failed": 0,
-        "created_at": datetime.now().isoformat(),
-    })
-    # Save to file first
-    tasks = await load_tasks()
-    tasks[tid] = task
-    await save_tasks(tasks)
-    # Push to Redis queue as JSON string
-    payload = json.dumps(task, ensure_ascii=False)
-    await redis.rpush(TASK_QUEUE, payload)
-    return tid
-
-
-async def get_task(tid: str) -> dict | None:
-    return (await load_tasks()).get(tid)
-
-
-async def update_task(tid: str, data: dict):
-    async with _lock:
-        tasks = await load_tasks()
-        if tid in tasks:
-            tasks[tid].update(data)
-            await save_tasks(tasks)
+        pass
+    return {}
 
 
 async def get_all_tasks() -> list:
-    tasks = await load_tasks()
-    return sorted(tasks.values(), key=lambda t: t.get("created_at", ""), reverse=True)
+    return list(_load().values())
 
 
-async def cancel_task(redis: Redis, tid: str):
-    await update_task(tid, {"status": "cancelled"})
+async def get_task(tid: str) -> Optional[dict]:
+    return _load().get(tid)
+
+
+async def cancel_task(tid: str):
+    data = _load()
+    if tid in data:
+        data[tid]["status"] = "cancelled"
+        with open(TASK_FILE, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)

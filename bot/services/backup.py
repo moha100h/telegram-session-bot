@@ -1,51 +1,51 @@
-import asyncio, logging, os, zipfile, io
+import asyncio
+import logging
+import os
+import zipfile
+import tempfile
 from datetime import datetime
 from aiogram import Bot
-from aiogram.types import BufferedInputFile
 from redis.asyncio import Redis
-from config import ADMIN_IDS, SESSIONS_DIR, DATA_DIR, BACKUPS_DIR
 
 logger = logging.getLogger("backup")
-BACKUP_INTERVAL = 3600
+
+ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
+SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/app/sessions")
+DATA_DIR     = os.getenv("DATA_DIR", "/app/data")
+BACKUP_INTERVAL = 3600  # 1 hour
+
 
 class BackupService:
     def __init__(self, bot: Bot, redis: Redis):
-        self.bot = bot
+        self.bot   = bot
         self.redis = redis
 
-    async def create_backup(self) -> bytes:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for fname in os.listdir(SESSIONS_DIR):
-                zf.write(os.path.join(SESSIONS_DIR, fname), f"sessions/{fname}")
-            for fname in os.listdir(DATA_DIR):
-                fp = os.path.join(DATA_DIR, fname)
-                if os.path.isfile(fp):
-                    zf.write(fp, f"data/{fname}")
-        buf.seek(0)
-        return buf.read()
-
-    async def send_backup(self):
+    async def do_backup(self):
         try:
-            data = await self.create_backup()
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"backup_{ts}.zip"
-            os.makedirs(BACKUPS_DIR, exist_ok=True)
-            with open(os.path.join(BACKUPS_DIR, fname), "wb") as f:
-                f.write(data)
-            for admin_id in ADMIN_IDS:
-                try:
-                    await self.bot.send_document(
-                        admin_id,
-                        BufferedInputFile(data, filename=fname),
-                        caption=f"🗄 بکاپ خودکار\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n📦 {len(data)//1024} KB",
-                    )
-                except Exception as e:
-                    logger.error(f"Send backup to {admin_id}: {e}")
+            ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
+            tmp = tempfile.mktemp(suffix=f"_backup_{ts}.zip")
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                # Sessions
+                if os.path.exists(SESSIONS_DIR):
+                    for f in os.listdir(SESSIONS_DIR):
+                        zf.write(os.path.join(SESSIONS_DIR, f), f"sessions/{f}")
+                # Data
+                if os.path.exists(DATA_DIR):
+                    for f in os.listdir(DATA_DIR):
+                        if f.endswith(".json"):
+                            zf.write(os.path.join(DATA_DIR, f), f"data/{f}")
+            from aiogram.types import FSInputFile
+            doc = FSInputFile(tmp, filename=f"backup_{ts}.zip")
+            await self.bot.send_document(
+                ADMIN_ID, doc,
+                caption=f"💾 بکاپ خودکار | {ts}"
+            )
+            os.remove(tmp)
+            logger.info(f"Backup sent: {ts}")
         except Exception as e:
             logger.error(f"Backup error: {e}")
 
     async def run(self):
         while True:
             await asyncio.sleep(BACKUP_INTERVAL)
-            await self.send_backup()
+            await self.do_backup()

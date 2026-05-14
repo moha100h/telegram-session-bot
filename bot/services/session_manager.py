@@ -1,105 +1,158 @@
-import os, json, asyncio, logging, io, random
+import asyncio
+import json
+import logging
+import os
+from typing import Optional
 from telethon import TelegramClient
-from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
-from telethon.tl.functions.photos import UploadProfilePhotoRequest
-from config import API_ID, API_HASH, SESSIONS_DIR, DATA_DIR
-import aiofiles, aiohttp
+from telethon.errors import SessionPasswordNeededError
+from redis.asyncio import Redis
 
 logger = logging.getLogger("session_manager")
-SESSIONS_META = os.path.join(DATA_DIR, "sessions_meta.json")
 
-async def load_meta() -> dict:
-    if os.path.exists(SESSIONS_META):
-        async with aiofiles.open(SESSIONS_META, "r") as f:
-            return json.loads(await f.read())
+API_ID        = int(os.getenv("API_ID", "0"))
+API_HASH      = os.getenv("API_HASH", "")
+SESSIONS_DIR  = os.getenv("SESSIONS_DIR", "/app/sessions")
+DATA_DIR      = os.getenv("DATA_DIR", "/app/data")
+SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
+
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+_login_clients: dict = {}
+
+
+def _load_sessions() -> dict:
+    try:
+        if os.path.exists(SESSIONS_FILE):
+            with open(SESSIONS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
     return {}
 
-async def save_meta(meta: dict):
-    async with aiofiles.open(SESSIONS_META, "w") as f:
-        await f.write(json.dumps(meta, ensure_ascii=False, indent=2))
+
+def _save_sessions(data: dict):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SESSIONS_FILE, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 async def get_all_sessions() -> list:
-    meta = await load_meta()
-    sessions = []
-    if not os.path.exists(SESSIONS_DIR):
-        return []
-    for fname in os.listdir(SESSIONS_DIR):
-        if fname.endswith(".session"):
-            name = fname[:-8]
-            info = dict(meta.get(name, {}))
-            info["name"] = name
-            sessions.append(info)
-    return sessions
+    data = _load_sessions()
+    # Also scan session files not in JSON
+    file_names = set()
+    if os.path.exists(SESSIONS_DIR):
+        for f in os.listdir(SESSIONS_DIR):
+            if f.endswith(".session"):
+                file_names.add(f.replace(".session", ""))
+    result = []
+    all_names = set(data.keys()) | file_names
+    for name in all_names:
+        info = data.get(name, {})
+        path = os.path.join(SESSIONS_DIR, name + ".session")
+        result.append({
+            "name":   name,
+            "phone":  info.get("phone", name),
+            "active": os.path.exists(path),
+            **info
+        })
+    return result
+
 
 async def get_active_sessions() -> list:
-    return [s for s in await get_all_sessions() if s.get("status") == "active"]
+    return [s for s in await get_all_sessions() if s.get("active")]
 
-async def get_client(session_name: str, proxy: dict = None) -> TelegramClient:
+
+async def get_session(name: str) -> Optional[dict]:
+    data = _load_sessions()
+    info = data.get(name, {})
+    path = os.path.join(SESSIONS_DIR, name + ".session")
+    if not os.path.exists(path) and name not in data:
+        return None
+    return {
+        "name":   name,
+        "phone":  info.get("phone", name),
+        "active": os.path.exists(path),
+        **info
+    }
+
+
+async def get_session_names() -> list:
+    names = []
+    if os.path.exists(SESSIONS_DIR):
+        for f in os.listdir(SESSIONS_DIR):
+            if f.endswith(".session"):
+                names.append(f.replace(".session", ""))
+    return names
+
+
+async def add_session(redis: Redis, phone: str, step: str,
+                      code: str = None,
+                      phone_code_hash: str = None,
+                      password: str = None) -> dict:
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        phone = "+" + phone
+    session_name = phone.replace("+", "").replace(" ", "")
     session_path = os.path.join(SESSIONS_DIR, session_name)
-    kwargs = {}
-    if proxy and proxy.get("type") in ("socks5", "socks4", "http"):
-        kwargs["proxy"] = (proxy["type"], proxy["host"], int(proxy["port"]))
-    return TelegramClient(session_path, API_ID, API_HASH, **kwargs)
 
-async def check_session(session_name: str, proxy: dict = None) -> dict:
-    try:
-        client = await get_client(session_name, proxy)
-        await client.connect()
-        if not await client.is_user_authorized():
+    if step == "send_code":
+        try:
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+            result = await client.send_code_request(phone)
+            _login_clients[phone] = client
+            return {"ok": True, "phone_code_hash": result.phone_code_hash}
+        except Exception as e:
+            logger.error(f"[add_session] send_code {phone}: {e}")
+            return {"ok": False, "error": str(e)}
+
+    elif step == "sign_in":
+        client = _login_clients.get(phone)
+        if client is None:
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+            _login_clients[phone] = client
+        try:
+            await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
             await client.disconnect()
-            return {"status": "unauthorized", "session": session_name}
-        me = await client.get_me()
-        await client.disconnect()
-        return {"status": "active", "session": session_name, "phone": me.phone,
-                "username": me.username, "first_name": me.first_name, "id": me.id}
-    except Exception as e:
-        return {"status": "error", "session": session_name, "error": str(e)}
+            _login_clients.pop(phone, None)
+            data = _load_sessions()
+            data[session_name] = {"phone": phone}
+            _save_sessions(data)
+            return {"ok": True}
+        except SessionPasswordNeededError:
+            return {"ok": False, "need_password": True}
+        except Exception as e:
+            logger.error(f"[add_session] sign_in {phone}: {e}")
+            return {"ok": False, "error": str(e)}
 
-async def update_session_meta(session_name: str, data: dict):
-    meta = await load_meta()
-    meta.setdefault(session_name, {}).update(data)
-    await save_meta(meta)
+    elif step == "2fa":
+        client = _login_clients.get(phone)
+        if client is None:
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await client.connect()
+            _login_clients[phone] = client
+        try:
+            await client.sign_in(password=password)
+            await client.disconnect()
+            _login_clients.pop(phone, None)
+            data = _load_sessions()
+            data[session_name] = {"phone": phone}
+            _save_sessions(data)
+            return {"ok": True}
+        except Exception as e:
+            logger.error(f"[add_session] 2fa {phone}: {e}")
+            return {"ok": False, "error": str(e)}
 
-async def delete_session(session_name: str):
-    path = os.path.join(SESSIONS_DIR, session_name + ".session")
+    return {"ok": False, "error": "unknown step"}
+
+
+async def delete_session(name: str):
+    data = _load_sessions()
+    data.pop(name, None)
+    _save_sessions(data)
+    path = os.path.join(SESSIONS_DIR, name + ".session")
     if os.path.exists(path):
         os.remove(path)
-    meta = await load_meta()
-    meta.pop(session_name, None)
-    await save_meta(meta)
-
-async def auto_setup_profile(session_name: str, proxy: dict = None) -> bool:
-    FIRST = ["Alex","Sam","Jordan","Taylor","Morgan","Casey","Riley","Avery","Quinn","Blake"]
-    LAST  = ["Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis"]
-    BIOS  = ["Just here to connect 🌟","Living life one day at a time ✨","Explorer | Dreamer 🚀","Coffee lover ☕","Making memories 📸"]
-    first = random.choice(FIRST)
-    last  = random.choice(LAST)
-    bio   = random.choice(BIOS)
-    uname = f"{first.lower()}{last.lower()}{random.randint(100,9999)}"
-    try:
-        client = await get_client(session_name, proxy)
-        await client.connect()
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return False
-        await client(UpdateProfileRequest(first_name=first, last_name=last, about=bio))
-        try:
-            await client(UpdateUsernameRequest(uname))
-        except Exception:
-            pass
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(f"https://api.dicebear.com/7.x/avataaars/png?seed={uname}&size=200") as r:
-                    if r.status == 200:
-                        data = await r.read()
-                        f = await client.upload_file(io.BytesIO(data), file_name="avatar.png")
-                        await client(UploadProfilePhotoRequest(file=f))
-        except Exception:
-            pass
-        await client.disconnect()
-        await update_session_meta(session_name, {"first_name": first, "last_name": last,
-            "username": uname, "bio": bio, "auto_setup": True})
-        return True
-    except Exception as e:
-        logger.error(f"auto_setup error {session_name}: {e}")
-        return False
+    logger.info(f"[delete_session] {name} removed")
