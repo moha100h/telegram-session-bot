@@ -2,43 +2,42 @@ import asyncio
 import logging
 import os
 from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.types import BotCommand, BotCommandScopeDefault
 from redis.asyncio import Redis
 from handlers import start, sessions, tasks, stats, backup, proxy, virtual_number
 from services.backup import BackupService
 from services.proxy_fetcher import ProxyFetcher
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("bot")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("main")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-
-
-async def set_bot_commands(bot: Bot):
-    commands = [
-        BotCommand(command="start",   description="🏠 منوی اصلی"),
-        BotCommand(command="menu",    description="📋 باز کردن منو"),
-        BotCommand(command="sessions",description="📱 مدیریت سشن‌ها"),
-        BotCommand(command="tasks",   description="⚙️ مدیریت تسک‌ها"),
-        BotCommand(command="stats",   description="📊 آمار"),
-        BotCommand(command="backup",  description="💾 بکاپ"),
-        BotCommand(command="proxy",   description="🌐 پروکسی"),
-    ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-    logger.info("Bot commands set")
+BOT_TOKEN  = os.getenv("BOT_TOKEN", "")
+REDIS_URL  = os.getenv("REDIS_URL", "redis://redis:6379/0")
+ADMIN_ID   = int(os.getenv("ADMIN_ID", "0"))
 
 
 async def main():
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
-    storage = RedisStorage(redis=redis)
-    bot = Bot(token=BOT_TOKEN)
-    dp  = Dispatcher(storage=storage)
+    logger.info(f"Starting bot | ADMIN_ID={ADMIN_ID}")
 
+    redis = Redis.from_url(REDIS_URL)
+    storage = RedisStorage(redis)
+
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    dp = Dispatcher(storage=storage)
+
+    # Inject redis & bot into handlers
     dp["redis"] = redis
     dp["bot"]   = bot
 
+    # Register routers
     dp.include_router(start.router)
     dp.include_router(sessions.router)
     dp.include_router(tasks.router)
@@ -47,15 +46,12 @@ async def main():
     dp.include_router(proxy.router)
     dp.include_router(virtual_number.router)
 
-    await set_bot_commands(bot)
+    # Background services
+    asyncio.create_task(BackupService(bot, redis).run())
+    asyncio.create_task(ProxyFetcher(redis).run())
 
-    backup_svc = BackupService(bot, redis)
-    proxy_svc  = ProxyFetcher(redis)
-    asyncio.create_task(backup_svc.run())
-    asyncio.create_task(proxy_svc.run())
-
-    logger.info("Bot started")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    logger.info("Bot started, polling...")
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
