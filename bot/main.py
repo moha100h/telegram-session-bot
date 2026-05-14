@@ -14,11 +14,15 @@ logger = logging.getLogger("bot")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
+
 async def main():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     storage = RedisStorage(redis=redis)
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=storage)
+
+    # Inject redis into handlers via workflow_data
+    dp["redis"] = redis
 
     dp.include_router(start.router)
     dp.include_router(sessions.router)
@@ -35,6 +39,7 @@ async def main():
 
     logger.info("Bot started successfully")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
 
 if __name__ == "__main__":
     asyncio.run(main())

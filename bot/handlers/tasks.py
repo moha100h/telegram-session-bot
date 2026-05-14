@@ -11,18 +11,39 @@ router = Router()
 router.message.middleware(AdminMiddleware())
 router.callback_query.middleware(AdminMiddleware())
 
-class TaskStates(StatesGroup):
-    join_target = State()
-    join_count = State()
-    g2g_source = State()
-    g2g_dest = State()
-    g2g_count = State()
-    g2g_per_session = State()
-    view_target = State()
-    view_count = State()
-    reaction_target = State()
-    reaction_emoji = State()
-    reaction_count = State()
+
+class JoinStates(StatesGroup):
+    target = State()
+    count = State()
+
+
+class G2GStates(StatesGroup):
+    source = State()
+    dest = State()
+    count = State()
+    per_session = State()
+
+
+class ViewStates(StatesGroup):
+    target = State()
+    count = State()
+
+
+class ReactionStates(StatesGroup):
+    target = State()
+    emoji = State()
+    count = State()
+
+
+class CancelStates(StatesGroup):
+    task_id = State()
+
+
+def back_btn(cb="menu_tasks"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data=cb)]
+    ])
+
 
 def tasks_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -30,94 +51,135 @@ def tasks_menu():
         [InlineKeyboardButton(text="🔄 گروه به گروه", callback_data="task_g2g")],
         [InlineKeyboardButton(text="👁 ویو پست", callback_data="task_view")],
         [InlineKeyboardButton(text="👍 ریاکشن", callback_data="task_reaction")],
-        [InlineKeyboardButton(text="📋 لیست تسک‌ها", callback_data="task_list")],
-        [InlineKeyboardButton(text="❌ لغو تسک", callback_data="task_cancel_menu")],
+        [InlineKeyboardButton(text="📋 لیست تسک‌ها", callback_data="task_list"),
+         InlineKeyboardButton(text="❌ لغو تسک", callback_data="task_cancel_menu")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_main")],
     ])
 
+
 @router.callback_query(F.data == "menu_tasks")
-async def tasks_menu_cb(cb: CallbackQuery):
+async def tasks_menu_cb(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     tasks = await get_all_tasks()
     running = sum(1 for t in tasks if t["status"] == "running")
     pending = sum(1 for t in tasks if t["status"] == "pending")
     done = sum(1 for t in tasks if t["status"] == "completed")
     await cb.message.edit_text(
-        f"⚙️ <b>مدیریت تسک‌ها</b>\n\n▶️ در حال اجرا: <b>{running}</b>\n⏳ در صف: <b>{pending}</b>\n✅ تمام شده: <b>{done}</b>",
+        f"⚙️ <b>مدیریت تسک‌ها</b>\n\n"
+        f"▶️ در حال اجرا: <b>{running}</b>\n"
+        f"⏳ در صف: <b>{pending}</b>\n"
+        f"✅ تمام شده: <b>{done}</b>",
         reply_markup=tasks_menu(), parse_mode="HTML")
 
-# ── JOIN TASK ────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
+# JOIN
+# ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "task_join")
 async def task_join_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("📥 لینک کانال/گروه مقصد را بفرستید:\nمثال: @channel یا https://t.me/channel")
-    await state.set_state(TaskStates.join_target)
+    await state.clear()
+    await cb.message.edit_text(
+        "📥 <b>تسک عضویت</b>\n\nلینک یا یوزرنیم کانال/گروه مقصد:\n"
+        "مثال: @channel یا https://t.me/channel",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(JoinStates.target)
 
-@router.message(TaskStates.join_target)
+
+@router.message(JoinStates.target)
 async def task_join_target(message: Message, state: FSMContext):
     await state.update_data(target=message.text.strip())
     sessions = await get_active_sessions()
-    await message.answer(f"📊 تعداد سشن فعال: {len(sessions)}\nچند سشن عضو شوند? (0 = همه)")
-    await state.set_state(TaskStates.join_count)
+    await message.answer(
+        f"📊 سشن فعال: <b>{len(sessions)}</b>\nچند سشن عضو شوند? (0 = همه)",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(JoinStates.count)
 
-@router.message(TaskStates.join_count)
+
+@router.message(JoinStates.count)
 async def task_join_count(message: Message, state: FSMContext, redis: Redis):
     try:
         count = int(message.text.strip())
     except ValueError:
-        await message.answer("❌ عدد صحیح وارد کنید")
+        await message.answer("❌ عدد صحیح وارد کنید", reply_markup=back_btn())
         return
     data = await state.get_data()
     await state.clear()
     sessions = await get_active_sessions()
-    use_sessions = sessions[:count] if count > 0 else sessions
+    use = sessions[:count] if count > 0 else sessions
     tid = await create_task(redis, {
         "type": "join",
         "target": data["target"],
-        "sessions": [s["name"] for s in use_sessions],
-        "total": len(use_sessions),
+        "sessions": [s["name"] for s in use],
+        "total": len(use),
     })
     await message.answer(
-        f"✅ تسک عضویت ساخته شد\n🆔 ID: <code>{tid}</code>\n📱 سشن: {len(use_sessions)}\n🎯 مقصد: {data['target']}",
+        f"✅ تسک عضویت ساخته شد\n"
+        f"🆔 ID: <code>{tid}</code>\n"
+        f"📱 سشن: {len(use)}\n"
+        f"🎯 مقصد: {data['target']}",
         parse_mode="HTML", reply_markup=tasks_menu())
 
-# ── GROUP TO GROUP ───────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
+# GROUP TO GROUP
+# ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "task_g2g")
 async def task_g2g_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("🔄 آیدی گروه مبدا را بفرستید:\n(آیدی عددی گروه یا لینک)")
-    await state.set_state(TaskStates.g2g_source)
+    await state.clear()
+    await cb.message.edit_text(
+        "🔄 <b>گروه به گروه</b>\n\n"
+        "آیدی گروه <b>مبدا</b> را بفرستید:\n"
+        "مثال: @groupname یا https://t.me/groupname یا -100123456789",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(G2GStates.source)
 
-@router.message(TaskStates.g2g_source)
+
+@router.message(G2GStates.source)
 async def task_g2g_source(message: Message, state: FSMContext):
     await state.update_data(source=message.text.strip())
-    await message.answer("🎯 آیدی گروه مقصد را بفرستید:")
-    await state.set_state(TaskStates.g2g_dest)
+    await message.answer(
+        "🎯 آیدی گروه <b>مقصد</b> را بفرستید:\n"
+        "مثال: @groupname یا https://t.me/groupname",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(G2GStates.dest)
 
-@router.message(TaskStates.g2g_dest)
+
+@router.message(G2GStates.dest)
 async def task_g2g_dest(message: Message, state: FSMContext):
     await state.update_data(dest=message.text.strip())
-    await message.answer("📊 تعداد کل کاربر برای انتقال:")
-    await state.set_state(TaskStates.g2g_count)
+    await message.answer(
+        "📊 تعداد کل کاربر برای انتقال:",
+        reply_markup=back_btn())
+    await state.set_state(G2GStates.count)
 
-@router.message(TaskStates.g2g_count)
+
+@router.message(G2GStates.count)
 async def task_g2g_count(message: Message, state: FSMContext):
     try:
         count = int(message.text.strip())
     except ValueError:
-        await message.answer("❌ عدد صحیح وارد کنید")
+        await message.answer("❌ عدد صحیح وارد کنید", reply_markup=back_btn())
         return
     await state.update_data(count=count)
-    await message.answer("📱 هر سشن چند نفر اد کند? (10-50 پیشنهاد)")
-    await state.set_state(TaskStates.g2g_per_session)
+    await message.answer(
+        "📱 هر سشن چند نفر اد کند?\n"
+        "پیشنهاد: 10 تا 50 نفر",
+        reply_markup=back_btn())
+    await state.set_state(G2GStates.per_session)
 
-@router.message(TaskStates.g2g_per_session)
+
+@router.message(G2GStates.per_session)
 async def task_g2g_per_session(message: Message, state: FSMContext, redis: Redis):
     try:
-        per = int(message.text.strip())
-        per = max(1, min(50, per))
+        per = max(1, min(50, int(message.text.strip())))
     except ValueError:
         per = 20
     data = await state.get_data()
     await state.clear()
     sessions = await get_active_sessions()
+    if not sessions:
+        await message.answer("❌ هیچ سشن فعالی وجود ندارد", reply_markup=tasks_menu())
+        return
     tid = await create_task(redis, {
         "type": "group2group",
         "source": data["source"],
@@ -128,27 +190,41 @@ async def task_g2g_per_session(message: Message, state: FSMContext, redis: Redis
         "total": data["count"],
     })
     await message.answer(
-        f"✅ تسک گروه به گروه ساخته شد\n🆔 ID: <code>{tid}</code>\n📊 تعداد: {data['count']}\n📱 هر سشن: {per} نفر",
+        f"✅ تسک گروه به گروه ساخته شد\n"
+        f"🆔 ID: <code>{tid}</code>\n"
+        f"📊 تعداد: {data['count']} نفر\n"
+        f"📱 هر سشن: {per} نفر\n"
+        f"📤 مبدا: {data['source']}\n"
+        f"📥 مقصد: {data['dest']}",
         parse_mode="HTML", reply_markup=tasks_menu())
 
-# ── VIEW POST ────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
+# VIEW
+# ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "task_view")
 async def task_view_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("👁 لینک پست را بفرستید:\nمثال: https://t.me/channel/123")
-    await state.set_state(TaskStates.view_target)
+    await state.clear()
+    await cb.message.edit_text(
+        "👁 <b>ویو پست</b>\n\nلینک پست را بفرستید:\n"
+        "مثال: https://t.me/channel/123",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(ViewStates.target)
 
-@router.message(TaskStates.view_target)
+
+@router.message(ViewStates.target)
 async def task_view_target(message: Message, state: FSMContext):
     await state.update_data(target=message.text.strip())
-    await message.answer("📊 تعداد ویو:")
-    await state.set_state(TaskStates.view_count)
+    await message.answer("📊 تعداد ویو:", reply_markup=back_btn())
+    await state.set_state(ViewStates.count)
 
-@router.message(TaskStates.view_count)
+
+@router.message(ViewStates.count)
 async def task_view_count(message: Message, state: FSMContext, redis: Redis):
     try:
         count = int(message.text.strip())
     except ValueError:
-        await message.answer("❌ عدد صحیح وارد کنید")
+        await message.answer("❌ عدد صحیح وارد کنید", reply_markup=back_btn())
         return
     data = await state.get_data()
     await state.clear()
@@ -164,30 +240,56 @@ async def task_view_count(message: Message, state: FSMContext, redis: Redis):
         f"✅ تسک ویو ساخته شد\n🆔 ID: <code>{tid}</code>\n👁 تعداد: {count}",
         parse_mode="HTML", reply_markup=tasks_menu())
 
-# ── REACTION ─────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
+# REACTION
+# ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "task_reaction")
 async def task_reaction_start(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("👍 لینک پست را بفرستید:")
-    await state.set_state(TaskStates.reaction_target)
+    await state.clear()
+    await cb.message.edit_text(
+        "👍 <b>ریاکشن</b>\n\nلینک پست را بفرستید:\n"
+        "مثال: https://t.me/channel/123",
+        parse_mode="HTML", reply_markup=back_btn())
+    await state.set_state(ReactionStates.target)
 
-@router.message(TaskStates.reaction_target)
+
+@router.message(ReactionStates.target)
 async def task_reaction_target(message: Message, state: FSMContext):
     await state.update_data(target=message.text.strip())
-    await message.answer("😊 ایموجی ریاکشن را بفرستید:\nمثال: 👍 یا ❤️ یا 🔥")
-    await state.set_state(TaskStates.reaction_emoji)
+    await message.answer(
+        "😊 ایموجی ریاکشن:\n"
+        "👍 ❤️ 🔥 🎉 👏 🤔 😮 😢 😡",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👍", callback_data="react_👍"),
+             InlineKeyboardButton(text="❤️", callback_data="react_❤️"),
+             InlineKeyboardButton(text="🔥", callback_data="react_🔥"),
+             InlineKeyboardButton(text="🎉", callback_data="react_🎉")],
+            [InlineKeyboardButton(text="👏", callback_data="react_👏"),
+             InlineKeyboardButton(text="🤔", callback_data="react_🤔"),
+             InlineKeyboardButton(text="😮", callback_data="react_😮"),
+             InlineKeyboardButton(text="😢", callback_data="react_😢")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_tasks")],
+        ]))
+    await state.set_state(ReactionStates.emoji)
 
-@router.message(TaskStates.reaction_emoji)
-async def task_reaction_emoji(message: Message, state: FSMContext):
-    await state.update_data(emoji=message.text.strip())
-    await message.answer("📊 تعداد ریاکشن:")
-    await state.set_state(TaskStates.reaction_count)
 
-@router.message(TaskStates.reaction_count)
+@router.callback_query(F.data.startswith("react_"), ReactionStates.emoji)
+async def task_reaction_emoji_cb(cb: CallbackQuery, state: FSMContext):
+    emoji = cb.data.replace("react_", "")
+    await state.update_data(emoji=emoji)
+    await cb.message.edit_text(
+        f"ایموجی انتخاب شد: {emoji}\n📊 تعداد ریاکشن:",
+        reply_markup=back_btn())
+    await state.set_state(ReactionStates.count)
+
+
+@router.message(ReactionStates.count)
 async def task_reaction_count(message: Message, state: FSMContext, redis: Redis):
     try:
         count = int(message.text.strip())
     except ValueError:
-        await message.answer("❌ عدد صحیح وارد کنید")
+        await message.answer("❌ عدد صحیح وارد کنید", reply_markup=back_btn())
         return
     data = await state.get_data()
     await state.clear()
@@ -204,35 +306,62 @@ async def task_reaction_count(message: Message, state: FSMContext, redis: Redis)
         f"✅ تسک ریاکشن ساخته شد\n🆔 ID: <code>{tid}</code>\n{data['emoji']} تعداد: {count}",
         parse_mode="HTML", reply_markup=tasks_menu())
 
-# ── LIST & CANCEL ────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────
+# LIST & CANCEL
+# ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "task_list")
 async def task_list(cb: CallbackQuery):
     tasks = await get_all_tasks()
     if not tasks:
-        await cb.message.edit_text("📭 هیچ تسکی وجود ندارد", reply_markup=tasks_menu())
+        await cb.message.edit_text("📭 هیچ تسکی وجود ندارد", reply_markup=back_btn())
         return
-    text = "📋 <b>لیست تسک‌ها:</b>\n\n"
     icons = {"pending": "⏳", "running": "▶️", "completed": "✅", "failed": "❌", "cancelled": "🚫"}
-    type_names = {"join": "عضویت", "group2group": "گروه→گروه", "view": "ویو", "reaction": "ریاکشن"}
-    for t in tasks[-20:]:
-        icon = icons.get(t["status"], "?‏")
-        tname = type_names.get(t["type"], t["type"])
-        text += f"{icon} <code>{t['id']}</code> | {tname} | انجام: {t.get('done',0)}/{t.get('total',0)}\n"
-    await cb.message.edit_text(text, reply_markup=tasks_menu(), parse_mode="HTML")
+    tnames = {"join": "عضویت", "group2group": "گروه→گروه", "view": "ویو", "reaction": "ریاکشن"}
+    text = "📋 <b>لیست تسک‌ها:</b>\n\n"
+    for t in list(reversed(tasks))[:15]:
+        icon = icons.get(t["status"], "?")
+        tname = tnames.get(t["type"], t["type"])
+        text += f"{icon} <code>{t['id']}</code> | {tname} | {t.get('done',0)}/{t.get('total',0)}\n"
+    await cb.message.edit_text(text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 به‌روزرسانی", callback_data="task_list")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_tasks")],
+        ]))
+
 
 @router.callback_query(F.data == "task_cancel_menu")
 async def task_cancel_menu(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("❌ ID تسک را بفرستید:")
-    await state.set_state(TaskStates.join_target)
-
-@router.message(TaskStates.join_target)
-async def task_cancel_do(message: Message, state: FSMContext, redis: Redis):
-    tid = message.text.strip()
-    task = await get_task(tid)
-    if not task:
-        await message.answer("❌ تسک یافت نشد")
-        await state.clear()
-        return
-    await cancel_task(redis, tid)
     await state.clear()
-    await message.answer(f"✅ تسک <code>{tid}</code> لغو شد", parse_mode="HTML", reply_markup=tasks_menu())
+    tasks = await get_all_tasks()
+    active = [t for t in tasks if t["status"] in ("pending", "running")]
+    if not active:
+        await cb.message.edit_text("❌ تسک فعالی وجود ندارد", reply_markup=back_btn())
+        return
+    buttons = []
+    tnames = {"join": "عضویت", "group2group": "گروه→گروه", "view": "ویو", "reaction": "ریاکشن"}
+    for t in active:
+        tname = tnames.get(t["type"], t["type"])
+        buttons.append([InlineKeyboardButton(
+            text=f"❌ {t['id']} | {tname} | {t.get('done',0)}/{t.get('total',0)}",
+            callback_data=f"cancel_task_{t['id']}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_tasks")])
+    await cb.message.edit_text("❌ تسک مورد نظر را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("cancel_task_"))
+async def task_cancel_do(cb: CallbackQuery, redis: Redis):
+    tid = cb.data.replace("cancel_task_", "")
+    await cancel_task(redis, tid)
+    await cb.answer(f"✅ تسک {tid} لغو شد")
+    await task_cancel_menu(cb, FSMContext.__new__(FSMContext))
+    # refresh list
+    tasks = await get_all_tasks()
+    active = [t for t in tasks if t["status"] in ("pending", "running")]
+    if not active:
+        await cb.message.edit_text(f"✅ تسک <code>{tid}</code> لغو شد",
+            parse_mode="HTML", reply_markup=back_btn())
+    else:
+        await task_cancel_menu(cb, None)
