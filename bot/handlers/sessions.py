@@ -1,4 +1,5 @@
 import os
+import asyncio
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -13,6 +14,11 @@ from services.session_manager import (
 
 router = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+ICON_OK   = "\u2705"
+ICON_WARN = "\u26a0\ufe0f"
+ICON_RED  = "\ud83d\udd34"
+ICON_NO   = "\u274c"
 
 
 class AddSessionStates(StatesGroup):
@@ -31,11 +37,11 @@ def is_admin(uid): return uid == ADMIN_ID
 
 def sessions_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ افزودن سشن",       callback_data="session_add")],
-        [InlineKeyboardButton(text="📋 لیست سشن‌ها",     callback_data="session_list")],
-        [InlineKeyboardButton(text="✅ تست همه سشن‌ها",  callback_data="session_verify_all")],
-        [InlineKeyboardButton(text="🚪 خروج از کانال/گروه", callback_data="session_leave")],
-        [InlineKeyboardButton(text="🔙 بازگشت",          callback_data="menu_main")],
+        [InlineKeyboardButton(text="\u2795 \u0627\u0641\u0632\u0648\u062f\u0646 \u0633\u0634\u0646",           callback_data="session_add")],
+        [InlineKeyboardButton(text="\ud83d\udccb \u0644\u06cc\u0633\u062a \u0633\u0634\u0646\u200c\u0647\u0627",       callback_data="session_list")],
+        [InlineKeyboardButton(text="\u2705 \u062a\u0633\u062a \u0647\u0645\u0647 \u0633\u0634\u0646\u200c\u0647\u0627",   callback_data="session_verify_all")],
+        [InlineKeyboardButton(text="\ud83d\udeaa \u062e\u0631\u0648\u062c \u0627\u0632 \u06a9\u0627\u0646\u0627\u0644/\u06af\u0631\u0648\u0647", callback_data="session_leave")],
+        [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a",            callback_data="menu_main")],
     ])
 
 
@@ -47,10 +53,10 @@ async def sessions_menu(cb: CallbackQuery, state: FSMContext):
     active   = sum(1 for s in sessions if s.get("active"))
     verified = sum(1 for s in sessions if s.get("verified"))
     await cb.message.edit_text(
-        f"📱 <b>مدیریت سشن‌ها</b>\n\n"
-        f"• کل: <b>{len(sessions)}</b>\n"
-        f"• فایل موجود: <b>{active}</b>\n"
-        f"• تست شده: <b>{verified}</b>",
+        f"\ud83d\udcf1 <b>\u0645\u062f\u06cc\u0631\u06cc\u062a \u0633\u0634\u0646\u200c\u0647\u0627</b>\n\n"
+        f"\u2022 \u06a9\u0644: <b>{len(sessions)}</b>\n"
+        f"\u2022 \u0641\u0627\u06cc\u0644 \u0645\u0648\u062c\u0648\u062f: <b>{active}</b>\n"
+        f"\u2022 \u062a\u0633\u062a \u0634\u062f\u0647: <b>{verified}</b>",
         reply_markup=sessions_menu_kb(), parse_mode="HTML"
     )
 
@@ -61,31 +67,31 @@ async def session_list(cb: CallbackQuery):
     sessions = await get_all_sessions()
     if not sessions:
         await cb.message.edit_text(
-            "📭 هیچ سشنی وجود ندارد",
+            "\ud83d\udced \u0647\u06cc\u0686 \u0633\u0634\u0646\u06cc \u0648\u062c\u0648\u062f \u0646\u062f\u0627\u0631\u062f",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="➕ افزودن", callback_data="session_add")],
-                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_sessions")],
+                [InlineKeyboardButton(text="\u2795 \u0627\u0641\u0632\u0648\u062f\u0646", callback_data="session_add")],
+                [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="menu_sessions")],
             ])
         )
         return
     buttons = []
     for s in sessions:
         if s.get("verified"):
-            icon = "✅"
+            icon = ICON_OK
         elif s.get("active"):
-            icon = "⚠️"
+            icon = ICON_WARN
         else:
-            icon = "🔴"
-        name = s.get("fullname") or s.get("phone", s["name"])
-        uname = f" @{s['username']}" if s.get("username") else ""
+            icon = ICON_RED
+        name  = s.get("fullname") or s.get("phone", s["name"])
+        uname = (" @" + s["username"]) if s.get("username") else ""
         buttons.append([InlineKeyboardButton(
             text=f"{icon} {name}{uname}",
-            callback_data=f"session_info_{s['name']}"
+            callback_data="session_info_" + s["name"]
         )])
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_sessions")])
+    buttons.append([InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="menu_sessions")])
     await cb.message.edit_text(
-        f"📱 <b>سشن‌ها ({len(sessions)} عدد)</b>\n"
-        f"✅=تستشده  ⚠️=تستنشده  🔴=فایل ندارد",
+        f"\ud83d\udcf1 <b>\u0633\u0634\u0646\u200c\u0647\u0627 ({len(sessions)} \u0639\u062f\u062f)</b>\n"
+        f"{ICON_OK}=\u062a\u0633\u062a\u0634\u062f\u0647  {ICON_WARN}=\u062a\u0633\u062a\u0646\u0634\u062f\u0647  {ICON_RED}=\u0641\u0627\u06cc\u0644 \u0646\u062f\u0627\u0631\u062f",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode="HTML"
     )
@@ -97,26 +103,32 @@ async def session_info(cb: CallbackQuery):
     name = cb.data.replace("session_info_", "")
     s = await get_session(name)
     if not s:
-        await cb.answer("سشن یافت نشد", show_alert=True)
+        await cb.answer("\u0633\u0634\u0646 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f", show_alert=True)
         return
-    icon = "✅" if s.get("verified") else ("⚠️" if s.get("active") else "🔴")
+
+    icon       = ICON_OK if s.get("verified") else (ICON_WARN if s.get("active") else ICON_RED)
+    file_icon  = ICON_OK if s.get("active")   else ICON_NO
+    test_icon  = ICON_OK if s.get("verified") else ICON_WARN
+    test_label = "\u0645\u0639\u062a\u0628\u0631" if s.get("verified") else "\u062a\u0633\u062a \u0646\u0634\u062f\u0647"
+
     lines = [
         f"{icon} <b>{s.get('fullname') or s.get('phone')}</b>",
-        f"• شماره: <code>{s.get('phone')}</code>",
+        f"\u2022 \u0634\u0645\u0627\u0631\u0647: <code>{s.get('phone')}</code>",
     ]
     if s.get("username"):
-        lines.append(f"• یوزرنیم: @{s['username']}")
+        lines.append(f"\u2022 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645: @{s['username']}")
     if s.get("user_id"):
-        lines.append(f"• ID: <code>{s['user_id']}</code>")
-    lines.append(f"• فایل: {'\u2705' if s.get('active') else '\u274c'}")
-    lines.append(f"• تست: {'\u2705 معتبر' if s.get('verified') else '\u26a0\ufe0f تست نشده'}")
+        lines.append(f"\u2022 ID: <code>{s['user_id']}</code>")
+    lines.append(f"\u2022 \u0641\u0627\u06cc\u0644: {file_icon}")
+    lines.append(f"\u2022 \u062a\u0633\u062a: {test_icon} {test_label}")
+
     await cb.message.edit_text(
         "\n".join(lines),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 تست سشن", callback_data=f"session_verify_{name}")],
-            [InlineKeyboardButton(text="🗑 حذف سشن", callback_data=f"session_del_{name}")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="session_list")],
+            [InlineKeyboardButton(text="\ud83d\udd0d \u062a\u0633\u062a \u0633\u0634\u0646", callback_data="session_verify_" + name)],
+            [InlineKeyboardButton(text="\ud83d\uddd1 \u062d\u0630\u0641 \u0633\u0634\u0646", callback_data="session_del_" + name)],
+            [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="session_list")],
         ])
     )
 
@@ -125,27 +137,27 @@ async def session_info(cb: CallbackQuery):
 async def session_verify_one(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     name = cb.data.replace("session_verify_", "")
-    await cb.message.edit_text("⏳ در حال تست سشن...")
+    await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062a\u0633\u062a \u0633\u0634\u0646...")
     result = await verify_session(name)
     if result["ok"]:
         me = result["me"]
         await cb.message.edit_text(
-            f"✅ <b>سشن معتبر است</b>\n\n"
-            f"• نام: {me['fullname']}\n"
-            f"• شماره: <code>{me['phone']}</code>\n"
-            f"• یوزرنیم: @{me['username'] or '-'}",
+            f"{ICON_OK} <b>\u0633\u0634\u0646 \u0645\u0639\u062a\u0628\u0631 \u0627\u0633\u062a</b>\n\n"
+            f"\u2022 \u0646\u0627\u0645: {me['fullname']}\n"
+            f"\u2022 \u0634\u0645\u0627\u0631\u0647: <code>{me['phone']}</code>\n"
+            f"\u2022 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645: @{me['username'] or '-'}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"session_info_{name}")]
+                [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="session_info_" + name)]
             ])
         )
     else:
         await cb.message.edit_text(
-            f"❌ <b>سشن نامعتبر</b>\nخطا: {result.get('error')}",
+            f"{ICON_NO} <b>\u0633\u0634\u0646 \u0646\u0627\u0645\u0639\u062a\u0628\u0631</b>\n\u062e\u0637\u0627: {result.get('error')}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🗑 حذف", callback_data=f"session_del_{name}")],
-                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="session_list")],
+                [InlineKeyboardButton(text="\ud83d\uddd1 \u062d\u0630\u0641", callback_data="session_del_" + name)],
+                [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="session_list")],
             ])
         )
 
@@ -155,26 +167,25 @@ async def session_verify_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     names = await get_session_names()
     if not names:
-        await cb.answer("هیچ سشنی وجود ندارد", show_alert=True)
+        await cb.answer("\u0647\u06cc\u0686 \u0633\u0634\u0646\u06cc \u0648\u062c\u0648\u062f \u0646\u062f\u0627\u0631\u062f", show_alert=True)
         return
-    await cb.message.edit_text(f"⏳ در حال تست {len(names)} سشن...")
+    await cb.message.edit_text(f"\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062a\u0633\u062a {len(names)} \u0633\u0634\u0646...")
     results = await verify_all_sessions()
     ok_count   = len(results["ok"])
     fail_count = len(results["fail"])
     fail_text  = ""
     if results["fail"]:
-        fail_text = "\n\n❌ نامعتبر:\n" + "\n".join(
-            f"• {f['name']}: {f['error']}" for f in results["fail"]
-        )
+        fail_lines = [f"\u2022 {f['name']}: {f['error']}" for f in results["fail"]]
+        fail_text  = "\n\n" + ICON_NO + " \u0646\u0627\u0645\u0639\u062a\u0628\u0631:\n" + "\n".join(fail_lines)
     await cb.message.edit_text(
-        f"🔍 <b>نتیجه تست سشن‌ها</b>\n\n"
-        f"✅ معتبر: <b>{ok_count}</b>\n"
-        f"❌ نامعتبر: <b>{fail_count}</b>"
+        f"\ud83d\udd0d <b>\u0646\u062a\u06cc\u062c\u0647 \u062a\u0633\u062a \u0633\u0634\u0646\u200c\u0647\u0627</b>\n\n"
+        f"{ICON_OK} \u0645\u0639\u062a\u0628\u0631: <b>{ok_count}</b>\n"
+        f"{ICON_NO} \u0646\u0627\u0645\u0639\u062a\u0628\u0631: <b>{fail_count}</b>"
         + fail_text,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 لیست سشن‌ها", callback_data="session_list")],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_sessions")],
+            [InlineKeyboardButton(text="\ud83d\udccb \u0644\u06cc\u0633\u062a \u0633\u0634\u0646\u200c\u0647\u0627", callback_data="session_list")],
+            [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="menu_sessions")],
         ])
     )
 
@@ -184,23 +195,23 @@ async def session_delete(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     name = cb.data.replace("session_del_", "")
     await delete_session(name)
-    await cb.answer("✅ سشن حذف شد")
+    await cb.answer("\u2705 \u0633\u0634\u0646 \u062d\u0630\u0641 \u0634\u062f")
     await session_list(cb)
 
 
-# ── Leave channel flow ─────────────────────────────────────────────────────────
+# Leave channel flow
 @router.callback_query(F.data == "session_leave")
 async def leave_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id): return
     await state.clear()
     await state.set_state(LeaveStates.channel)
     await cb.message.edit_text(
-        "🚪 <b>خروج از کانال/گروه</b>\n\n"
-        "لینک یا یوزرنیم کانال/گروه را بفرستید:\n"
-        "مثال: <code>@mychannel</code> یا <code>https://t.me/mychannel</code>",
+        "\ud83d\udeaa <b>\u062e\u0631\u0648\u062c \u0627\u0632 \u06a9\u0627\u0646\u0627\u0644/\u06af\u0631\u0648\u0647</b>\n\n"
+        "\u0644\u06cc\u0646\u06a9 \u06cc\u0627 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645 \u06a9\u0627\u0646\u0627\u0644/\u06af\u0631\u0648\u0647 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:\n"
+        "\u0645\u062b\u0627\u0644: <code>@mychannel</code> \u06cc\u0627 <code>https://t.me/mychannel</code>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ لغو", callback_data="menu_sessions")]
+            [InlineKeyboardButton(text="\u274c \u0644\u063a\u0648", callback_data="menu_sessions")]
         ])
     )
 
@@ -213,18 +224,18 @@ async def leave_channel_input(message: Message, state: FSMContext):
     await state.set_state(LeaveStates.sessions)
     names = await get_session_names()
     await message.answer(
-        f"📱 <b>انتخاب سشن‌ها</b>\n\n"
-        f"تعداد سشن موجود: <b>{len(names)}</b>\n"
-        f"عدد سشن برای خروج (0=همه):",
+        f"\ud83d\udcf1 <b>\u0627\u0646\u062a\u062e\u0627\u0628 \u0633\u0634\u0646\u200c\u0647\u0627</b>\n\n"
+        f"\u062a\u0639\u062f\u0627\u062f \u0633\u0634\u0646 \u0645\u0648\u062c\u0648\u062f: <b>{len(names)}</b>\n"
+        "\u0639\u062f\u062f \u0633\u0634\u0646 \u0628\u0631\u0627\u06cc \u062e\u0631\u0648\u062c (0=\u0647\u0645\u0647):",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="همه سشن‌ها", callback_data="leave_all")]
+            [InlineKeyboardButton(text="\u0647\u0645\u0647 \u0633\u0634\u0646\u200c\u0647\u0627", callback_data="leave_all")]
         ])
     )
 
 
 @router.callback_query(F.data == "leave_all", LeaveStates.sessions)
-async def leave_all_sessions(cb: CallbackQuery, state: FSMContext):
+async def leave_all_cb(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id): return
     data = await state.get_data()
     await state.clear()
@@ -237,20 +248,21 @@ async def leave_sessions_count(message: Message, state: FSMContext):
     try:
         n = int(message.text.strip())
     except ValueError:
-        await message.answer("❌ عدد صحیح وارد کنید")
+        await message.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f")
         return
     data = await state.get_data()
     await state.clear()
     await _do_leave(message, data["channel"], n if n > 0 else None)
 
 
-async def _do_leave(msg_or_cb, channel: str, limit):
+async def _do_leave(target, channel: str, limit):
     names = await get_session_names()
     if limit:
         names = names[:limit]
-    await msg_or_cb.answer(f"⏳ در حال خروج {len(names)} سشن از {channel}...")
-    ok_count = 0
-    fail_count = 0
+    await target.answer(
+        f"\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062e\u0631\u0648\u062c {len(names)} \u0633\u0634\u0646 \u0627\u0632 {channel}..."
+    )
+    ok_count = fail_count = 0
     for name in names:
         r = await leave_channel(name, channel)
         if r["ok"]:
@@ -258,34 +270,31 @@ async def _do_leave(msg_or_cb, channel: str, limit):
         else:
             fail_count += 1
         await asyncio.sleep(0.5)
-    await msg_or_cb.answer(
-        f"🚪 <b>نتیجه خروج</b>\n\n"
-        f"✅ موفق: <b>{ok_count}</b>\n"
-        f"❌ ناموفق: <b>{fail_count}</b>",
+    await target.answer(
+        f"\ud83d\udeaa <b>\u0646\u062a\u06cc\u062c\u0647 \u062e\u0631\u0648\u062c</b>\n\n"
+        f"{ICON_OK} \u0645\u0648\u0641\u0642: <b>{ok_count}</b>\n"
+        f"{ICON_NO} \u0646\u0627\u0645\u0648\u0641\u0642: <b>{fail_count}</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_sessions")]
+            [InlineKeyboardButton(text="\ud83d\udd19 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="menu_sessions")]
         ])
     )
 
 
-import asyncio
-
-
-# ── Add session flow ───────────────────────────────────────────────────────────
+# Add session flow
 @router.callback_query(F.data == "session_add")
 async def session_add_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id): return
     await state.clear()
     await state.set_state(AddSessionStates.phone)
     await cb.message.edit_text(
-        "➕ <b>افزودن سشن جدید</b>\n\n"
-        "📱 شماره تلگرام را بفرستید:\n"
-        "مثال: <code>+989123456789</code>\n"
-        "کد تایید به شماره ارسال می‌شود",
+        "\u2795 <b>\u0627\u0641\u0632\u0648\u062f\u0646 \u0633\u0634\u0646 \u062c\u062f\u06cc\u062f</b>\n\n"
+        "\ud83d\udcf1 \u0634\u0645\u0627\u0631\u0647 \u062a\u0644\u06af\u0631\u0627\u0645 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:\n"
+        "\u0645\u062b\u0627\u0644: <code>+989123456789</code>\n"
+        "\u06a9\u062f \u062a\u0627\u06cc\u06cc\u062f \u0628\u0647 \u0634\u0645\u0627\u0631\u0647 \u0627\u0631\u0633\u0627\u0644 \u0645\u06cc\u200c\u0634\u0648\u062f",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ لغو", callback_data="menu_sessions")]
+            [InlineKeyboardButton(text="\u274c \u0644\u063a\u0648", callback_data="menu_sessions")]
         ])
     )
 
@@ -294,18 +303,18 @@ async def session_add_start(cb: CallbackQuery, state: FSMContext):
 async def session_add_phone(message: Message, state: FSMContext, redis: Redis):
     if not is_admin(message.from_user.id): return
     phone = message.text.strip()
-    await message.answer("⏳ در حال ارسال کد...")
+    await message.answer("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u0627\u0631\u0633\u0627\u0644 \u06a9\u062f...")
     result = await add_session(redis, phone, step="send_code")
     if not result.get("ok"):
-        await message.answer(f"❌ خطا: {result.get('error', 'unknown')}")
+        await message.answer(f"\u274c \u062e\u0637\u0627: {result.get('error', 'unknown')}")
         await state.clear()
         return
     await state.update_data(phone=phone, phone_code_hash=result["phone_code_hash"])
     await state.set_state(AddSessionStates.code)
     await message.answer(
-        "✅ کد ارسال شد ☑️\n"
-        "🔢 کد دریافتی را وارد کنید:\n"
-        "(فقط ارقام بدون فاصله)"
+        "\u2705 \u06a9\u062f \u0627\u0631\u0633\u0627\u0644 \u0634\u062f\n"
+        "\ud83d\udd22 \u06a9\u062f \u062f\u0631\u06cc\u0627\u0641\u062a\u06cc \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:\n"
+        "(\u0641\u0642\u0637 \u0627\u0631\u0642\u0627\u0645 \u0628\u062f\u0648\u0646 \u0641\u0627\u0635\u0644\u0647)"
     )
 
 
@@ -318,18 +327,18 @@ async def session_add_code(message: Message, state: FSMContext, redis: Redis):
                                code=code, phone_code_hash=data.get("phone_code_hash"))
     if result.get("need_password"):
         await state.set_state(AddSessionStates.password)
-        await message.answer("🔐 رمز دومرحلهایی (2FA) را وارد کنید:")
+        await message.answer("\ud83d\udd10 \u0631\u0645\u0632 \u062f\u0648\u0645\u0631\u062d\u0644\u0647\u0627\u06cc\u06cc (2FA) \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:")
         return
     if not result["ok"]:
-        await message.answer(f"❌ خطا: {result.get('error', 'unknown')}")
+        await message.answer(f"\u274c \u062e\u0637\u0627: {result.get('error', 'unknown')}")
         await state.clear()
         return
     await state.clear()
     await message.answer(
-        "✅ <b>سشن با موفقیت اضافه شد!</b>",
+        "\u2705 <b>\u0633\u0634\u0646 \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u0627\u0636\u0627\u0641\u0647 \u0634\u062f!</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📱 لیست سشن‌ها", callback_data="session_list")]
+            [InlineKeyboardButton(text="\ud83d\udcf1 \u0644\u06cc\u0633\u062a \u0633\u0634\u0646\u200c\u0647\u0627", callback_data="session_list")]
         ])
     )
 
@@ -340,14 +349,14 @@ async def session_add_password(message: Message, state: FSMContext, redis: Redis
     data = await state.get_data()
     result = await add_session(redis, data["phone"], step="2fa", password=message.text.strip())
     if not result["ok"]:
-        await message.answer(f"❌ خطا: {result.get('error', 'unknown')}")
+        await message.answer(f"\u274c \u062e\u0637\u0627: {result.get('error', 'unknown')}")
         await state.clear()
         return
     await state.clear()
     await message.answer(
-        "✅ <b>سشن با موفقیت اضافه شد!</b>",
+        "\u2705 <b>\u0633\u0634\u0646 \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u0627\u0636\u0627\u0641\u0647 \u0634\u062f!</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📱 لیست سشن‌ها", callback_data="session_list")]
+            [InlineKeyboardButton(text="\ud83d\udcf1 \u0644\u06cc\u0633\u062a \u0633\u0634\u0646\u200c\u0647\u0627", callback_data="session_list")]
         ])
     )
