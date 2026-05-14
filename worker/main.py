@@ -14,7 +14,6 @@ from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError,
     UserAlreadyParticipantError, PeerFloodError,
     ChatWriteForbiddenError, UserBannedInChannelError,
-    SessionPasswordNeededError, AuthKeyUnregisteredError,
     ChatAdminRequiredError, UserNotMutualContactError,
     InputUserDeactivatedError
 )
@@ -43,8 +42,7 @@ def parse_target(target: str):
         path = target.split("t.me/", 1)[1]
         if path.startswith("+") or path.startswith("joinchat/"):
             return target
-        parts = path.split("/")
-        username = parts[0]
+        username = path.split("/")[0]
         return "@" + username if not username.startswith("@") else username
     if target.lstrip("-").isdigit():
         return int(target)
@@ -65,7 +63,6 @@ async def make_client(session_name: str, proxy: dict = None) -> TelegramClient:
 
 
 async def connect_client(session_name: str, proxy: dict = None) -> TelegramClient | None:
-    """Connect with proxy, fallback to direct."""
     if proxy:
         try:
             client = await make_client(session_name, proxy)
@@ -79,7 +76,6 @@ async def connect_client(session_name: str, proxy: dict = None) -> TelegramClien
                 await client.disconnect()
             except Exception:
                 pass
-
     try:
         client = await make_client(session_name, proxy=None)
         await asyncio.wait_for(client.connect(), timeout=15)
@@ -162,7 +158,7 @@ async def run_join(task: dict, redis: Redis):
     for session_name in sessions:
         if await is_cancelled(tid):
             break
-        proxy = await get_proxy(redis)
+        proxy  = await get_proxy(redis)
         client = await connect_client(session_name, proxy)
         if client is None:
             failed += 1
@@ -192,151 +188,152 @@ async def run_join(task: dict, redis: Redis):
 
 # ================================================================
 # GROUP TO GROUP
-# Flow per session:
-#   1. Join source group
-#   2. Collect members (up to per_session)
-#   3. Join dest group
-#   4. Add members by InputPeerUser
-#   5. Leave source group
+#
+# Flow:
+#   Phase 1 (once): scrape ALL member IDs from source WITHOUT joining
+#   Phase 2 (per session):
+#       a. Join dest
+#       b. Add per_session members by InputPeerUser
+#       c. Leave dest
 # ================================================================
 async def run_group2group(task: dict, redis: Redis):
-    tid        = task["id"]
-    source     = parse_target(task["source"])
-    dest       = parse_target(task["dest"])
-    total      = int(task["count"])
+    tid         = task["id"]
+    source      = parse_target(task["source"])
+    dest        = parse_target(task["dest"])
+    total       = int(task["count"])
     per_session = int(task.get("per_session", 20))
-    sessions   = task.get("sessions", [])
+    sessions    = task.get("sessions", [])
 
     await update_task(tid, {"status": "running"})
     done = failed = 0
-    global_offset = 0   # how many members we've already processed
-
     logger.info(f"[g2g] task={tid} {source}->{dest} total={total} per={per_session} sessions={len(sessions)}")
 
+    # ============================================================
+    # PHASE 1: Scrape members from source (no join needed)
+    # Use first available session that can resolve the entity
+    # ============================================================
+    all_members = []   # list of InputPeerUser
     for session_name in sessions:
-        if global_offset >= total:
+        if all_members:
+            break
+        proxy  = await get_proxy(redis)
+        client = await connect_client(session_name, proxy)
+        if client is None:
+            continue
+        try:
+            logger.info(f"[g2g] scraping source {source} via {session_name}")
+            source_entity = await client.get_entity(source)
+            async for user in client.iter_participants(
+                source_entity,
+                limit=total,
+                aggressive=True
+            ):
+                if user.bot or user.deleted:
+                    continue
+                if user.access_hash is None:
+                    continue
+                all_members.append(InputPeerUser(user.id, user.access_hash))
+                if len(all_members) >= total:
+                    break
+            logger.info(f"[g2g] scraped {len(all_members)} members from {source}")
+        except Exception as e:
+            logger.error(f"[g2g] scrape error via {session_name}: {type(e).__name__}: {e}")
+        finally:
+            await safe_disconnect(client)
+        await asyncio.sleep(2)
+
+    if not all_members:
+        await update_task(tid, {"status": "failed", "error": "could not scrape members from source"})
+        logger.error(f"[g2g] task {tid}: no members scraped")
+        return
+
+    logger.info(f"[g2g] total scraped: {len(all_members)}, will add up to {total}")
+
+    # ============================================================
+    # PHASE 2: Each session joins dest, adds batch, leaves dest
+    # ============================================================
+    member_idx = 0
+
+    for session_name in sessions:
+        if member_idx >= len(all_members):
             break
         if await is_cancelled(tid):
             break
 
+        batch  = all_members[member_idx: member_idx + per_session]
         proxy  = await get_proxy(redis)
         client = await connect_client(session_name, proxy)
         if client is None:
-            logger.warning(f"[g2g] {session_name}: cannot connect, skip")
+            logger.warning(f"[g2g] {session_name}: cannot connect, skip batch")
+            member_idx += per_session
             continue
 
-        joined_source = False
+        joined_dest = False
         try:
-            # ---- 1. Join source ----
-            try:
-                source_entity = await client.get_entity(source)
-                await client(JoinChannelRequest(source_entity))
-                joined_source = True
-                logger.info(f"[g2g] {session_name} joined source {source}")
-                await asyncio.sleep(2)
-            except UserAlreadyParticipantError:
-                source_entity = await client.get_entity(source)
-                joined_source = True
-            except Exception as e:
-                logger.error(f"[g2g] {session_name} join source failed: {type(e).__name__}: {e}")
-                continue
-
-            # ---- 2. Collect members (skip already processed) ----
-            members = []
-            try:
-                async for user in client.iter_participants(
-                    source_entity,
-                    limit=global_offset + per_session + 50,  # overfetch
-                    aggressive=True
-                ):
-                    if user.bot or user.deleted:
-                        continue
-                    if len(members) < global_offset:
-                        # skip already processed
-                        # (iter_participants returns from beginning)
-                        pass
-                    else:
-                        members.append(user)
-                    if len(members) >= per_session:
-                        break
-                logger.info(f"[g2g] {session_name} collected {len(members)} members (offset={global_offset})")
-            except Exception as e:
-                logger.error(f"[g2g] {session_name} collect error: {type(e).__name__}: {e}")
-
-            if not members:
-                logger.warning(f"[g2g] {session_name} no members to add")
-                continue
-
-            # ---- 3. Join dest ----
+            # a. Join dest
             try:
                 dest_entity = await client.get_entity(dest)
                 await client(JoinChannelRequest(dest_entity))
+                joined_dest = True
                 logger.info(f"[g2g] {session_name} joined dest {dest}")
-                await asyncio.sleep(2)
+                await asyncio.sleep(random.uniform(2, 4))
             except UserAlreadyParticipantError:
                 dest_entity = await client.get_entity(dest)
+                joined_dest = True
             except Exception as e:
                 logger.error(f"[g2g] {session_name} join dest failed: {type(e).__name__}: {e}")
+                member_idx += per_session
                 continue
 
-            # ---- 4. Add members ----
+            # b. Add members
             session_blocked = False
-            for user in members:
+            for input_user in batch:
                 if await is_cancelled(tid) or session_blocked:
                     break
                 try:
-                    # Use InputPeerUser for reliable add
-                    input_user = InputPeerUser(user.id, user.access_hash)
                     await client(InviteToChannelRequest(dest_entity, [input_user]))
                     done += 1
-                    global_offset += 1
-                    logger.info(f"[g2g] added user_id={user.id} ({done}/{total})")
+                    logger.info(f"[g2g] added user_id={input_user.user_id} ({done}/{total})")
                     await asyncio.sleep(random.uniform(4, 9))
                 except UserAlreadyParticipantError:
                     done += 1
-                    global_offset += 1
                 except FloodWaitError as e:
                     wait = min(e.seconds, 120)
-                    logger.warning(f"[g2g] FloodWait {e.seconds}s, sleeping {wait}s")
+                    logger.warning(f"[g2g] FloodWait {e.seconds}s")
                     await asyncio.sleep(wait)
                     failed += 1
-                    global_offset += 1
-                except UserPrivacyRestrictedError:
-                    logger.debug(f"[g2g] user {user.id} privacy restricted")
+                except (UserPrivacyRestrictedError,
+                        InputUserDeactivatedError,
+                        UserNotMutualContactError):
                     failed += 1
-                    global_offset += 1
-                except (InputUserDeactivatedError, UserNotMutualContactError):
-                    failed += 1
-                    global_offset += 1
                 except (PeerFloodError, UserBannedInChannelError,
                         ChatWriteForbiddenError, ChatAdminRequiredError) as e:
                     logger.warning(f"[g2g] {session_name} blocked: {type(e).__name__}")
                     session_blocked = True
-                    failed += len(members) - members.index(user)
-                    global_offset += len(members) - members.index(user)
+                    failed += len(batch) - batch.index(input_user)
                 except Exception as e:
-                    logger.error(f"[g2g] add user {user.id}: {type(e).__name__}: {e}")
+                    logger.error(f"[g2g] add {input_user.user_id}: {type(e).__name__}: {e}")
                     failed += 1
-                    global_offset += 1
                 await update_task(tid, {"done": done, "failed": failed})
 
         except Exception as e:
-            logger.error(f"[g2g] {session_name} outer error: {type(e).__name__}: {e}")
+            logger.error(f"[g2g] {session_name} outer: {type(e).__name__}: {e}")
         finally:
-            # ---- 5. Leave source ----
-            if joined_source:
+            # c. Leave dest
+            if joined_dest:
                 try:
-                    src_ent = await client.get_entity(source)
-                    await client(LeaveChannelRequest(src_ent))
-                    logger.info(f"[g2g] {session_name} left source {source}")
+                    d_ent = await client.get_entity(dest)
+                    await client(LeaveChannelRequest(d_ent))
+                    logger.info(f"[g2g] {session_name} left dest {dest}")
                 except Exception as e:
-                    logger.warning(f"[g2g] {session_name} leave source error: {e}")
+                    logger.warning(f"[g2g] {session_name} leave dest error: {e}")
             await safe_disconnect(client)
 
+        member_idx += per_session
         await asyncio.sleep(random.uniform(10, 20))
 
     await update_task(tid, {"status": "completed", "done": done, "failed": failed})
-    logger.info(f"[g2g] DONE task={tid} done={done} failed={failed} total_processed={global_offset}")
+    logger.info(f"[g2g] DONE task={tid} done={done} failed={failed}")
 
 
 # ================================================================
@@ -440,14 +437,12 @@ async def run_reaction(task: dict, redis: Redis):
 async def main():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     logger.info(f"Worker started | API_ID={API_ID} | SESSIONS_DIR={SESSIONS_DIR}")
-
     handlers = {
         "join":        run_join,
         "group2group": run_group2group,
         "view":        run_view,
         "reaction":    run_reaction,
     }
-
     while True:
         try:
             item = await redis.blpop(TASK_QUEUE, timeout=5)
