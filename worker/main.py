@@ -35,6 +35,11 @@ TASK_FILE    = os.path.join(DATA_DIR, "tasks.json")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# PeerFlood cooldown per session (seconds)
+PEER_FLOOD_COOLDOWN = 300   # 5 min rest then retry with next session
+ADD_DELAY_MIN = 15          # min seconds between each add
+ADD_DELAY_MAX = 30          # max seconds between each add
+
 
 def parse_target(target: str):
     target = target.strip().rstrip("/")
@@ -186,110 +191,27 @@ async def run_join(task: dict, redis: Redis):
 # ================================================================
 # GROUP TO GROUP
 #
-# Phase 1 (once): scrape ALL members from source (no join)
-# Phase 2 (parallel): each session gets its own slice,
-#   joins dest -> adds members -> leaves dest
+# Phase 1: scrape all members from source (no join)
+# Phase 2: sequential sessions, each gets a slice
+#   - join dest
+#   - add members one by one with safe delay
+#   - on PeerFlood: stop this session, pass remaining to next
+#   - leave dest
 # ================================================================
-async def _g2g_session_worker(
-    session_name: str,
-    members_slice: list,          # list of InputPeerUser
-    dest: str,
-    tid: str,
-    redis: Redis,
-    counters: dict,               # shared {"done": int, "failed": int}
-    lock: asyncio.Lock,
-):
-    """One session: join dest, add slice, leave dest."""
-    proxy  = await get_proxy(redis)
-    client = await connect_client(session_name, proxy)
-    if client is None:
-        async with lock:
-            counters["failed"] += len(members_slice)
-        await update_task(tid, {"done": counters["done"], "failed": counters["failed"]})
-        return
-
-    joined_dest = False
-    try:
-        # Join dest
-        try:
-            dest_entity = await client.get_entity(dest)
-            await client(JoinChannelRequest(dest_entity))
-            joined_dest = True
-            logger.info(f"[g2g] {session_name} joined dest {dest}")
-            await asyncio.sleep(random.uniform(1, 3))
-        except UserAlreadyParticipantError:
-            dest_entity = await client.get_entity(dest)
-            joined_dest = True
-        except Exception as e:
-            logger.error(f"[g2g] {session_name} join dest failed: {type(e).__name__}: {e}")
-            async with lock:
-                counters["failed"] += len(members_slice)
-            return
-
-        # Add members
-        session_blocked = False
-        for input_user in members_slice:
-            if await is_cancelled(tid) or session_blocked:
-                break
-            try:
-                await client(InviteToChannelRequest(dest_entity, [input_user]))
-                async with lock:
-                    counters["done"] += 1
-                logger.info(f"[g2g] {session_name} added {input_user.user_id} ({counters['done']} total)")
-                await asyncio.sleep(random.uniform(3, 6))   # faster than before
-            except UserAlreadyParticipantError:
-                async with lock:
-                    counters["done"] += 1
-            except FloodWaitError as e:
-                wait = min(e.seconds, 90)
-                logger.warning(f"[g2g] {session_name} FloodWait {e.seconds}s")
-                await asyncio.sleep(wait)
-                async with lock:
-                    counters["failed"] += 1
-            except (UserPrivacyRestrictedError,
-                    InputUserDeactivatedError,
-                    UserNotMutualContactError):
-                async with lock:
-                    counters["failed"] += 1
-            except (PeerFloodError, UserBannedInChannelError,
-                    ChatWriteForbiddenError, ChatAdminRequiredError) as e:
-                logger.warning(f"[g2g] {session_name} BLOCKED: {type(e).__name__}")
-                session_blocked = True
-                async with lock:
-                    counters["failed"] += len(members_slice) - members_slice.index(input_user)
-            except Exception as e:
-                logger.error(f"[g2g] {session_name} add {input_user.user_id}: {type(e).__name__}: {e}")
-                async with lock:
-                    counters["failed"] += 1
-            await update_task(tid, {"done": counters["done"], "failed": counters["failed"]})
-
-    except Exception as e:
-        logger.error(f"[g2g] {session_name} outer: {type(e).__name__}: {e}")
-    finally:
-        # Leave dest
-        if joined_dest:
-            try:
-                d_ent = await client.get_entity(dest)
-                await client(LeaveChannelRequest(d_ent))
-                logger.info(f"[g2g] {session_name} left dest {dest}")
-            except Exception as e:
-                logger.warning(f"[g2g] {session_name} leave dest: {e}")
-        await safe_disconnect(client)
-
-
 async def run_group2group(task: dict, redis: Redis):
     tid         = task["id"]
     source      = parse_target(task["source"])
     dest        = parse_target(task["dest"])
     total       = int(task["count"])
-    per_session = int(task.get("per_session", 20))
+    per_session = int(task.get("per_session", 10))  # default 10, safer
     sessions    = task.get("sessions", [])
 
     await update_task(tid, {"status": "running"})
+    done = failed = 0
     logger.info(f"[g2g] task={tid} {source}->{dest} total={total} per={per_session} sessions={len(sessions)}")
 
     # ── Phase 1: scrape ALL members once ──────────────────────────
-    all_members = []  # list[InputPeerUser]
+    all_members = []
     for session_name in sessions:
         if all_members:
             break
@@ -318,40 +240,146 @@ async def run_group2group(task: dict, redis: Redis):
         await asyncio.sleep(1)
 
     if not all_members:
-        await update_task(tid, {"status": "failed", "error": "no members scraped from source"})
+        await update_task(tid, {"status": "failed", "error": "no members scraped"})
         logger.error(f"[g2g] task {tid}: scrape failed")
         return
 
-    logger.info(f"[g2g] total scraped={len(all_members)}, sessions={len(sessions)}, per_session={per_session}")
+    logger.info(f"[g2g] scraped={len(all_members)} will process with {len(sessions)} sessions")
 
-    # ── Phase 2: split list → parallel session workers ────────────
-    # Slice all_members into chunks of per_session
-    slices = [
-        all_members[i: i + per_session]
-        for i in range(0, len(all_members), per_session)
-    ]
-    # Pair each slice with a session (round-robin if more slices than sessions)
-    counters = {"done": 0, "failed": 0}
-    lock = asyncio.Lock()
+    # ── Phase 2: sequential, each session picks up where previous left off ──
+    # remaining = members not yet successfully added
+    remaining = list(all_members)
 
-    # Run sessions concurrently (max 5 at a time to avoid Telegram limits)
-    sem = asyncio.Semaphore(5)
-
-    async def run_with_sem(sname, slc):
-        async with sem:
-            await _g2g_session_worker(sname, slc, dest, tid, redis, counters, lock)
-
-    tasks_coro = []
-    for i, slc in enumerate(slices):
+    for session_idx, session_name in enumerate(sessions):
+        if not remaining:
+            break
         if await is_cancelled(tid):
             break
-        session_name = sessions[i % len(sessions)]
-        tasks_coro.append(run_with_sem(session_name, slc))
 
-    await asyncio.gather(*tasks_coro)
+        # Take per_session slice from remaining
+        batch    = remaining[:per_session]
+        proxy    = await get_proxy(redis)
+        client   = await connect_client(session_name, proxy)
+        if client is None:
+            logger.warning(f"[g2g] {session_name}: cannot connect, skip")
+            failed += len(batch)
+            remaining = remaining[per_session:]
+            await update_task(tid, {"done": done, "failed": failed})
+            continue
 
-    await update_task(tid, {"status": "completed", "done": counters["done"], "failed": counters["failed"]})
-    logger.info(f"[g2g] DONE task={tid} done={counters['done']} failed={counters['failed']}")
+        joined_dest   = False
+        added_in_sess = 0
+        peer_flooded  = False
+
+        try:
+            # Join dest
+            try:
+                dest_entity = await client.get_entity(dest)
+                await client(JoinChannelRequest(dest_entity))
+                joined_dest = True
+                logger.info(f"[g2g] {session_name} joined dest")
+                await asyncio.sleep(random.uniform(2, 4))
+            except UserAlreadyParticipantError:
+                dest_entity = await client.get_entity(dest)
+                joined_dest = True
+            except Exception as e:
+                logger.error(f"[g2g] {session_name} join dest: {type(e).__name__}: {e}")
+                failed += len(batch)
+                remaining = remaining[per_session:]
+                continue
+
+            # Add members one by one
+            processed_in_batch = 0
+            for input_user in batch:
+                if await is_cancelled(tid):
+                    break
+                if peer_flooded:
+                    break
+
+                try:
+                    await client(InviteToChannelRequest(dest_entity, [input_user]))
+                    done += 1
+                    added_in_sess += 1
+                    processed_in_batch += 1
+                    logger.info(f"[g2g] {session_name} added {input_user.user_id} ({done}/{total})")
+                    await update_task(tid, {"done": done, "failed": failed})
+                    # Safe delay — key to avoid PeerFlood
+                    await asyncio.sleep(random.uniform(ADD_DELAY_MIN, ADD_DELAY_MAX))
+
+                except UserAlreadyParticipantError:
+                    done += 1
+                    processed_in_batch += 1
+
+                except FloodWaitError as e:
+                    wait = min(e.seconds, 180)
+                    logger.warning(f"[g2g] {session_name} FloodWait {e.seconds}s, sleeping {wait}s")
+                    await asyncio.sleep(wait)
+                    # retry same user
+                    try:
+                        await client(InviteToChannelRequest(dest_entity, [input_user]))
+                        done += 1
+                        added_in_sess += 1
+                        processed_in_batch += 1
+                        await update_task(tid, {"done": done, "failed": failed})
+                        await asyncio.sleep(random.uniform(ADD_DELAY_MIN, ADD_DELAY_MAX))
+                    except Exception:
+                        failed += 1
+                        processed_in_batch += 1
+
+                except PeerFloodError:
+                    logger.warning(f"[g2g] {session_name} PeerFloodError after {added_in_sess} adds — switching session")
+                    peer_flooded = True
+                    # Don't count remaining batch as failed — next session will handle them
+                    break
+
+                except (UserPrivacyRestrictedError,
+                        InputUserDeactivatedError,
+                        UserNotMutualContactError):
+                    failed += 1
+                    processed_in_batch += 1
+
+                except (UserBannedInChannelError,
+                        ChatWriteForbiddenError,
+                        ChatAdminRequiredError) as e:
+                    logger.warning(f"[g2g] {session_name} banned: {type(e).__name__}")
+                    peer_flooded = True
+                    break
+
+                except Exception as e:
+                    logger.error(f"[g2g] add {input_user.user_id}: {type(e).__name__}: {e}")
+                    failed += 1
+                    processed_in_batch += 1
+
+            # Remove successfully processed from remaining
+            if peer_flooded:
+                # Only remove what was actually processed before flood
+                remaining = remaining[processed_in_batch:]
+                logger.info(f"[g2g] {session_name} peer flooded, {len(remaining)} members left for next sessions")
+            else:
+                remaining = remaining[per_session:]
+
+        except Exception as e:
+            logger.error(f"[g2g] {session_name} outer: {type(e).__name__}: {e}")
+            remaining = remaining[per_session:]
+        finally:
+            if joined_dest:
+                try:
+                    d_ent = await client.get_entity(dest)
+                    await client(LeaveChannelRequest(d_ent))
+                    logger.info(f"[g2g] {session_name} left dest")
+                except Exception as e:
+                    logger.warning(f"[g2g] {session_name} leave dest: {e}")
+            await safe_disconnect(client)
+
+        logger.info(f"[g2g] session {session_name} done: added={added_in_sess}, remaining={len(remaining)}")
+        # Rest between sessions
+        if remaining and not await is_cancelled(tid):
+            rest = random.uniform(20, 40)
+            logger.info(f"[g2g] resting {rest:.0f}s before next session")
+            await asyncio.sleep(rest)
+
+    await update_task(tid, {"status": "completed", "done": done, "failed": failed})
+    logger.info(f"[g2g] DONE task={tid} done={done} failed={failed} remaining={len(remaining)}")
 
 
 # ================================================================
@@ -370,7 +398,6 @@ async def run_view(task: dict, redis: Redis):
     except Exception:
         await update_task(tid, {"status": "failed", "error": "invalid link"})
         return
-    logger.info(f"[view] task={tid} {channel}/{msg_id} sessions={len(sessions)}")
     for session_name in sessions:
         if await is_cancelled(tid):
             break
@@ -395,7 +422,6 @@ async def run_view(task: dict, redis: Redis):
         await update_task(tid, {"done": done, "failed": failed})
         await asyncio.sleep(random.uniform(1, 2))
     await update_task(tid, {"status": "completed", "done": done, "failed": failed})
-    logger.info(f"[view] DONE task={tid} done={done} failed={failed}")
 
 
 # ================================================================
@@ -415,7 +441,6 @@ async def run_reaction(task: dict, redis: Redis):
     except Exception:
         await update_task(tid, {"status": "failed", "error": "invalid link"})
         return
-    logger.info(f"[reaction] task={tid} {channel}/{msg_id} emoji={emoji}")
     for session_name in sessions:
         if await is_cancelled(tid):
             break
@@ -444,7 +469,6 @@ async def run_reaction(task: dict, redis: Redis):
         await update_task(tid, {"done": done, "failed": failed})
         await asyncio.sleep(random.uniform(1, 3))
     await update_task(tid, {"status": "completed", "done": done, "failed": failed})
-    logger.info(f"[reaction] DONE task={tid} done={done} failed={failed}")
 
 
 # ================================================================
@@ -473,7 +497,6 @@ async def main():
             tid = task.get("id", "?")
             t = await load_task(tid)
             if t and t.get("status") == "cancelled":
-                logger.info(f"Task {tid} cancelled, skip")
                 continue
             task_type = task.get("type")
             handler   = handlers.get(task_type)
