@@ -1,0 +1,39 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: tsb_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  bot:
+    build: ./bot
+    container_name: tsb_bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./sessions:/app/sessions
+      - ./backups:/app/backups
+      - ./data:/app/data
+    depends_on:
+      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  worker:
+    build: ./worker
+    container_name: tsb_worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+    depends_on:
+      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  redis_data:
