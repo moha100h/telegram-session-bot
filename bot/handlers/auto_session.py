@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import random
+import string
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -9,15 +11,21 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneNumberBannedError
-
-from services.herosms import (
-    get_balance, get_cheapest_country, get_number,
-    get_sms_code, cancel_number, confirm_number, HeroSMSError
+from telethon.errors import (
+    SessionPasswordNeededError, FloodWaitError,
+    PhoneNumberBannedError, PhoneCodeExpiredError,
+    PhoneCodeInvalidError, PhoneNumberInvalidError,
 )
 
-logger   = logging.getLogger("auto_session")
-router   = Router()
+from services.herosms import (
+    get_balance, get_prices, get_best_country,
+    get_number_smart, get_sms_code,
+    cancel_number, confirm_number, HeroSMSError,
+    PREFERRED_COUNTRIES,
+)
+
+logger       = logging.getLogger("auto_session")
+router       = Router()
 
 API_ID        = int(os.getenv("API_ID", "0"))
 API_HASH      = os.getenv("API_HASH", "")
@@ -26,23 +34,23 @@ DATA_DIR      = os.getenv("DATA_DIR", "/app/data")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))
 
-# Country IDs on HeroSMS (SMS-Activate compatible)
-# Preferred countries that work well with Telegram
-COUNTRY_LIST = [
-    (0,   "🌍 ارزون‌ترین خودکار"),
-    (106, "🇰🇿 Kazakhstan"),
-    (1,   "🇷🇺 Russia"),
-    (14,  "🇺🇦 Ukraine"),
-    (6,   "🇮🇩 Indonesia"),
-    (22,  "🇵🇭 Philippines"),
-    (12,  "🇧🇩 Bangladesh"),
-]
+COUNTRY_NAMES = {
+    0:   "🌍 ارزون‌ترین خودکار",
+    106: "🇰🇿 Kazakhstan",
+    1:   "🇷🇺 Russia",
+    14:  "🇺🇦 Ukraine",
+    6:   "🇮🇩 Indonesia",
+    22:  "🇵🇭 Philippines",
+    12:  "🇧🇩 Bangladesh",
+    31:  "🇿🇦 South Africa",
+}
 
 
 class AutoSessionState(StatesGroup):
-    country = State()
-    count   = State()
+    count = State()
 
+
+# ─── helpers ────────────────────────────────────────────────────────────────
 
 def _load_sessions() -> dict:
     try:
@@ -71,24 +79,89 @@ def _patch_sqlite(client):
         pass
 
 
+def _remove_session_files(phone: str):
+    """Remove all .session files for a phone number."""
+    base = os.path.join(SESSIONS_DIR, phone)
+    for ext in [".session", ".session-shm", ".session-wal", ".session-journal"]:
+        p = base + ext
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
+async def _verify_and_enrich(phone: str) -> dict | None:
+    """
+    Connect to existing session, verify it's authorized,
+    and return enriched info dict or None if invalid.
+    """
+    session_path = os.path.join(SESSIONS_DIR, phone)
+    client = TelegramClient(session_path, API_ID, API_HASH,
+                            connection_retries=2, retry_delay=2)
+    try:
+        await asyncio.wait_for(client.connect(), timeout=15)
+        _patch_sqlite(client)
+
+        if not await client.is_user_authorized():
+            return None
+
+        me = await asyncio.wait_for(client.get_me(), timeout=10)
+        if not me:
+            return None
+
+        # Set profile if missing
+        first = me.first_name or ""
+        last  = me.last_name  or ""
+        uname = me.username   or ""
+
+        return {
+            "phone":    "+" + phone if not phone.startswith("+") else phone,
+            "verified": True,
+            "username": uname,
+            "fullname": (first + " " + last).strip(),
+            "user_id":  me.id,
+            "dc_id":    me.photo.dc_id if me.photo else None,
+        }
+    except Exception as e:
+        logger.warning("[autosess] verify %s failed: %s", phone, e)
+        return None
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
+async def _set_random_profile(client: TelegramClient):
+    """Set a random first/last name if account has no name."""
+    try:
+        me = await client.get_me()
+        if me and not me.first_name:
+            first_names = ["Alex", "Sam", "Jordan", "Taylor", "Morgan",
+                           "Casey", "Riley", "Jamie", "Avery", "Quinn"]
+            last_names  = ["Smith", "Johnson", "Brown", "Davis", "Wilson",
+                           "Moore", "Taylor", "Anderson", "Thomas", "Jackson"]
+            fn = random.choice(first_names)
+            ln = random.choice(last_names)
+            await client("account.UpdateProfileRequest", first_name=fn, last_name=ln)
+            logger.info("[autosess] set profile: %s %s", fn, ln)
+    except Exception as e:
+        logger.warning("[autosess] set_profile failed: %s", e)
+
+
+# ─── menus ──────────────────────────────────────────────────────────────────
+
 def auto_session_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 خرید خودکار سشن",  callback_data="autosess_start")],
-        [InlineKeyboardButton(text="💰 موجودی HeroSMS",    callback_data="autosess_balance")],
-        [InlineKeyboardButton(text="🔙 بازگشت",            callback_data="menu_main")],
+        [InlineKeyboardButton(text="🤖 خرید خودکار سشن",    callback_data="autosess_start")],
+        [InlineKeyboardButton(text="🧹 پاکسازی سشن‌های نامعتبر", callback_data="autosess_cleanup")],
+        [InlineKeyboardButton(text="💰 موجودی HeroSMS",       callback_data="autosess_balance")],
+        [InlineKeyboardButton(text="🔙 بازگشت",               callback_data="menu_main")],
     ])
 
 
-def country_select_kb() -> InlineKeyboardMarkup:
-    buttons = []
-    for cid, name in COUNTRY_LIST:
-        buttons.append([InlineKeyboardButton(
-            text=name,
-            callback_data=f"autosess_country_{cid}"
-        )])
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_autosession")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
+# ─── handlers ───────────────────────────────────────────────────────────────
 
 @router.message(Command("autosession"))
 async def cmd_autosession(msg: Message):
@@ -104,13 +177,13 @@ async def cmd_autosession(msg: Message):
 
 @router.callback_query(F.data == "menu_autosession")
 async def menu_autosession(cb: CallbackQuery):
+    await cb.answer()
     await cb.message.edit_text(
         "🤖 <b>خرید خودکار سشن</b>\n\n"
         "شماره مجازی از HeroSMS میخره و خودکار Telethon session میسازه.",
         reply_markup=auto_session_menu(),
         parse_mode="HTML",
     )
-    await cb.answer()
 
 
 @router.callback_query(F.data == "autosess_balance")
@@ -118,11 +191,49 @@ async def autosess_balance(cb: CallbackQuery):
     await cb.answer()
     try:
         balance = await get_balance()
+        # Also show available countries
+        prices = await get_prices("tg")
+        lines = [f"💰 <b>موجودی HeroSMS:</b> <code>{balance:.2f}$</code>\n"]
+        lines.append("📊 <b>کشورهای موجود:</b>")
+        for cid in PREFERRED_COUNTRIES:
+            if cid in prices:
+                name = COUNTRY_NAMES.get(cid, f"Country {cid}")
+                p    = prices[cid]
+                lines.append(f"  {name}: <code>{p['cost']:.3f}$</code> ({p['count']} عدد)")
         await cb.message.edit_text(
-            f"💰 <b>موجودی HeroSMS:</b> <code>{balance:.2f}$</code>",
+            "\n".join(lines),
             reply_markup=auto_session_menu(),
             parse_mode="HTML",
         )
+    except HeroSMSError as e:
+        await cb.message.edit_text(
+            f"❌ خطا: <code>{e}</code>",
+            reply_markup=auto_session_menu(),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "autosess_start")
+async def autosess_start(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        balance = await get_balance()
+        cid, price, avail = await get_best_country("tg")
+        country_name = COUNTRY_NAMES.get(cid, f"Country {cid}")
+        max_possible = min(int(balance / price), avail, 50) if price > 0 else 0
+
+        await cb.message.edit_text(
+            f"🤖 <b>خرید سشن تلگرام</b>\n"
+            f"💰 موجودی: <code>{balance:.2f}$</code>\n"
+            f"🌍 بهترین کشور: <b>{country_name}</b> (ID: {cid})\n"
+            f"💵 قیمت هر شماره: <code>{price:.3f}$</code>\n"
+            f"📦 موجود: <code>{avail}</code> شماره\n"
+            f"📊 حداکثر قابل خرید: <code>{max_possible}</code> سشن\n\n"
+            f"چند سشن می‌خوای بخری؟ (1-{min(max_possible, 50)})",
+            parse_mode="HTML",
+        )
+        await state.set_state(AutoSessionState.count)
+        await state.update_data(country=cid, price=price)
     except HeroSMSError as e:
         await cb.message.edit_text(
             f"❌ خطا در اتصال به HeroSMS:\n<code>{e}</code>",
@@ -131,75 +242,60 @@ async def autosess_balance(cb: CallbackQuery):
         )
 
 
-@router.callback_query(F.data == "autosess_start")
-async def autosess_start(cb: CallbackQuery):
+@router.callback_query(F.data == "autosess_cleanup")
+async def autosess_cleanup(cb: CallbackQuery):
     await cb.answer()
-    try:
-        balance = await get_balance()
-        await cb.message.edit_text(
-            f"🤖 <b>خرید سشن تلگرام</b>\n"
-            f"💰 موجودی: <code>{balance:.2f}$</code>\n\n"
-            f"🌍 کشور مورد نظر رو انتخاب کن:\n"
-            f"<i>توصیه: Kazakhstan یا Russia برای سشن باکیفیتتر</i>",
-            reply_markup=country_select_kb(),
-            parse_mode="HTML",
-        )
-    except HeroSMSError as e:
-        await cb.message.edit_text(
-            f"❌ خطا: <code>{e}</code>",
-            reply_markup=auto_session_menu(),
-            parse_mode="HTML",
-        )
+    msg = await cb.message.edit_text(
+        "🔍 در حال بررسی سشن‌ها...\nلطفاً صبر کنید.",
+        parse_mode="HTML",
+    )
 
+    sessions_data = _load_sessions()
+    session_files = [
+        f.replace(".session", "")
+        for f in os.listdir(SESSIONS_DIR)
+        if f.endswith(".session") and not f.endswith("-shm") and not f.endswith("-wal")
+    ]
 
-@router.callback_query(F.data.startswith("autosess_country_"))
-async def autosess_country_selected(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
-    cid = int(cb.data.split("_")[-1])
+    removed   = []
+    kept      = []
+    updated   = {}
 
-    try:
-        if cid == 0:
-            # Auto: find cheapest
-            country, price = await get_cheapest_country("tg")
+    for phone in session_files:
+        info = await _verify_and_enrich(phone)
+        if info is None:
+            _remove_session_files(phone)
+            if phone in sessions_data:
+                del sessions_data[phone]
+            removed.append(phone)
+            logger.info("[cleanup] removed invalid session: %s", phone)
         else:
-            # Get price for selected country
-            from services.herosms import _get
-            import aiohttp, json as _json
-            async with aiohttp.ClientSession() as sess:
-                from services.herosms import HEROSMS_BASE, HEROSMS_API_KEY
-                params = {"action": "getPrices", "service": "tg", "country": cid, "api_key": HEROSMS_API_KEY}
-                async with sess.get(HEROSMS_BASE, params=params) as r:
-                    raw = await r.text()
-            try:
-                data = _json.loads(raw)
-                info = data.get(str(cid), {}).get("tg", {})
-                price = float(info.get("cost", 0))
-                count_avail = int(info.get("count", 0))
-            except Exception:
-                price = 0.0
-                count_avail = 0
-            country = cid
+            updated[phone] = info
+            kept.append(f"✅ +{phone} — @{info['username'] or info['fullname']}")
 
-        balance = await get_balance()
-        max_possible = int(balance / price) if price > 0 else 0
-        country_name = next((n for c, n in COUNTRY_LIST if c == cid), f"Country {cid}")
+    # Also remove from sessions.json entries that have no file
+    for phone in list(sessions_data.keys()):
+        if phone not in updated:
+            del sessions_data[phone]
 
-        await cb.message.edit_text(
-            f"🌍 کشور: <b>{country_name}</b> (ID: {country})\n"
-            f"💵 قیمت هر شماره: <code>{price:.3f}$</code>\n"
-            f"💰 موجودی: <code>{balance:.2f}$</code>\n"
-            f"📦 حداکثر قابل خرید: <code>{max_possible}</code> سشن\n\n"
-            f"چند سشن میخوای بخری؟ (1-50)",
-            parse_mode="HTML",
-        )
-        await state.set_state(AutoSessionState.count)
-        await state.update_data(country=country, price=price)
-    except Exception as e:
-        await cb.message.edit_text(
-            f"❌ خطا: <code>{e}</code>",
-            reply_markup=auto_session_menu(),
-            parse_mode="HTML",
-        )
+    sessions_data.update(updated)
+    _save_sessions(sessions_data)
+
+    lines = [f"🧹 <b>پاکسازی تمام شد!</b>\n"]
+    lines.append(f"✅ معتبر: <b>{len(kept)}</b>")
+    lines.append(f"🗑 حذف شده: <b>{len(removed)}</b>\n")
+    if kept:
+        lines.append("<b>سشن‌های معتبر:</b>")
+        lines.extend(kept[:20])
+    if removed:
+        lines.append("\n<b>حذف شده‌ها:</b>")
+        lines.extend([f"❌ +{p}" for p in removed[:20]])
+
+    await msg.edit_text(
+        "\n".join(lines),
+        reply_markup=auto_session_menu(),
+        parse_mode="HTML",
+    )
 
 
 @router.message(AutoSessionState.count)
@@ -215,16 +311,11 @@ async def autosess_count(msg: Message, state: FSMContext):
         await msg.answer("❌ عدد صحیح وارد کن.")
         return
 
-    data    = await state.get_data()
+    data  = await state.get_data()
     await state.clear()
-    country = data["country"]
-    price   = data["price"]
-    total   = count * price
 
     status_msg = await msg.answer(
-        f"🚀 شروع خرید <b>{count}</b> سشن...\n"
-        f"💵 هزینه تخمینی: <code>{total:.2f}$</code>\n\n"
-        f"⏳ در حال پردازش...",
+        f"🚀 شروع خرید <b>{count}</b> سشن...\n⏳ در حال پردازش...",
         parse_mode="HTML",
     )
 
@@ -237,66 +328,86 @@ async def autosess_count(msg: Message, state: FSMContext):
         phone         = None
         client        = None
         try:
-            # 1. Buy number
-            activation_id, phone = await get_number(country, "tg")
-            logger.info("[autosess] %d/%d bought %s (id=%d)", i+1, count, phone, activation_id)
+            # 1. Buy number (smart — tries best countries)
+            activation_id, phone, country_id, price = await get_number_smart("tg")
+            cname = COUNTRY_NAMES.get(country_id, f"C{country_id}")
+            logger.info("[autosess] %d/%d bought %s id=%d (%s)", i+1, count, phone, activation_id, cname)
 
-            # 2. Connect Telethon
+            # 2. Prepare session path
             session_name = phone.lstrip("+")
             session_path = os.path.join(SESSIONS_DIR, session_name)
+            _remove_session_files(session_name)  # clean stale
 
-            # Remove stale session file if exists
-            for ext in [".session", ".session-shm", ".session-wal", ".session-journal"]:
-                stale = session_path + ext
-                if os.path.exists(stale):
-                    os.remove(stale)
-
-            client = TelegramClient(session_path, API_ID, API_HASH,
-                                    connection_retries=3, retry_delay=2)
+            # 3. Connect Telethon
+            client = TelegramClient(
+                session_path, API_ID, API_HASH,
+                connection_retries=3, retry_delay=3,
+            )
             await asyncio.wait_for(client.connect(), timeout=20)
             _patch_sqlite(client)
 
-            # 3. Send code request
+            # 4. Send code
             phone_fmt = "+" + phone if not phone.startswith("+") else phone
-            sent = await client.send_code_request(phone_fmt)
-            logger.info("[autosess] code sent to %s", phone_fmt)
+            sent = await asyncio.wait_for(
+                client.send_code_request(phone_fmt), timeout=20
+            )
 
-            # 4. Wait for SMS
+            # 5. Update progress
             await status_msg.edit_text(
-                f"📱 [{i+1}/{count}] شماره: <code>{phone_fmt}</code>\n"
+                f"📱 [{i+1}/{count}] شماره: <code>{phone_fmt}</code> ({cname})\n"
                 f"⏳ منتظر SMS (حداکثر ۲ دقیقه)...",
                 parse_mode="HTML",
             )
+
+            # 6. Wait for SMS
             code = await get_sms_code(activation_id, timeout=120)
-            logger.info("[autosess] got code=%s for %s", code, phone_fmt)
 
             if not code:
-                await cancel_number(activation_id)
                 failed += 1
-                results.append(f"❌ {phone_fmt} — SMS نرسید")
+                results.append(f"❌ {phone_fmt} — SMS نرسید (refund شد)")
                 continue
 
-            # 5. Sign in
+            # 7. Sign in
             try:
-                await client.sign_in(phone_fmt, code,
-                                     phone_code_hash=sent.phone_code_hash)
+                await asyncio.wait_for(
+                    client.sign_in(phone_fmt, code, phone_code_hash=sent.phone_code_hash),
+                    timeout=20,
+                )
+            except PhoneCodeExpiredError:
+                await cancel_number(activation_id)
+                failed += 1
+                results.append(f"❌ {phone_fmt} — کد منقضی شد (refund)")
+                continue
+            except PhoneCodeInvalidError:
+                await cancel_number(activation_id)
+                failed += 1
+                results.append(f"❌ {phone_fmt} — کد اشتباه (refund)")
+                continue
             except SessionPasswordNeededError:
                 await cancel_number(activation_id)
                 failed += 1
-                results.append(f"⚠️ {phone_fmt} — 2FA فعاله (skip)")
+                results.append(f"⚠️ {phone_fmt} — 2FA فعاله (refund)")
                 continue
 
-            # 6. Verify authorized
+            # 8. Verify
             if not await client.is_user_authorized():
                 await cancel_number(activation_id)
                 failed += 1
-                results.append(f"❌ {phone_fmt} — sign_in ناموفق")
+                results.append(f"❌ {phone_fmt} — unauthorized بعد از sign_in (refund)")
                 continue
 
-            # 7. Save session
-            me = await client.get_me()
+            # 9. Get full user info
+            me = await asyncio.wait_for(client.get_me(), timeout=10)
+
+            # 10. Set random profile if no name
+            if me and not me.first_name:
+                await _set_random_profile(client)
+                me = await client.get_me()  # refresh
+
+            # 11. Confirm purchase
             await confirm_number(activation_id)
 
+            # 12. Save to sessions.json
             sessions_data = _load_sessions()
             sessions_data[session_name] = {
                 "phone":    phone_fmt,
@@ -304,25 +415,36 @@ async def autosess_count(msg: Message, state: FSMContext):
                 "username": me.username or "",
                 "fullname": ((me.first_name or "") + " " + (me.last_name or "")).strip(),
                 "user_id":  me.id,
+                "country":  country_id,
+                "price":    price,
             }
             _save_sessions(sessions_data)
 
             success += 1
             name_str = f"@{me.username}" if me.username else (me.first_name or "?")
-            results.append(f"✅ {phone_fmt} — {name_str}")
-            logger.info("[autosess] %s saved OK — %s", session_name, name_str)
+            results.append(f"✅ {phone_fmt} — {name_str} ({cname})")
+            logger.info("[autosess] saved %s — %s", session_name, name_str)
 
         except PhoneNumberBannedError:
             if activation_id:
                 await cancel_number(activation_id)
             failed += 1
-            results.append(f"🚫 {phone or '?'} — شماره بن شده")
+            results.append(f"🚫 {phone or '?'} — شماره بن شده (refund)")
+        except PhoneNumberInvalidError:
+            if activation_id:
+                await cancel_number(activation_id)
+            failed += 1
+            results.append(f"❌ {phone or '?'} — شماره نامعتبر (refund)")
         except FloodWaitError as e:
             if activation_id:
                 await cancel_number(activation_id)
             failed += 1
-            results.append(f"⏱ {phone or '?'} — FloodWait {e.seconds}s")
-            await asyncio.sleep(min(e.seconds, 60))
+            wait = min(e.seconds, 60)
+            results.append(f"⏱ {phone or '?'} — FloodWait {e.seconds}s (refund)")
+            await asyncio.sleep(wait)
+        except HeroSMSError as e:
+            failed += 1
+            results.append(f"❌ ? — {str(e)[:60]}")
         except Exception as e:
             if activation_id:
                 try:
@@ -339,14 +461,14 @@ async def autosess_count(msg: Message, state: FSMContext):
                 except Exception:
                     pass
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
         # Progress update
         try:
             await status_msg.edit_text(
                 f"🔄 پیشرفت: {i+1}/{count}\n"
                 f"✅ موفق: {success} | ❌ ناموفق: {failed}\n\n"
-                + "\n".join(results[-8:]),
+                + "\n".join(results[-10:]),
                 parse_mode="HTML",
             )
         except Exception:
