@@ -76,32 +76,58 @@ async def get_number(country: int, service: str = "tg") -> tuple:
 
 
 async def get_sms_code(activation_id: int, timeout: int = 120) -> Optional[str]:
-    """Poll for SMS code. Returns code or None on timeout/cancel."""
+    """
+    Poll for SMS code.
+    Returns code string on success.
+    Returns None on timeout or cancel — and auto-cancels to trigger refund.
+    """
     async with aiohttp.ClientSession() as session:
         start = asyncio.get_event_loop().time()
+        got_code = None
         while asyncio.get_event_loop().time() - start < timeout:
             result = await _get(session, {
                 "action": "getStatus",
                 "id":     activation_id,
             })
             if result.startswith("STATUS_OK:"):
-                return result.split(":")[1]
+                got_code = result.split(":")[1]
+                break
             elif result in ("STATUS_WAIT_CODE", "STATUS_WAIT_RETRY"):
                 await asyncio.sleep(5)
             elif result == "STATUS_CANCEL":
+                # Already cancelled by provider
+                logger.info("[herosms] activation %d cancelled by provider", activation_id)
                 return None
-            else:
+            elif result == "STATUS_WAIT_RESEND":
                 await asyncio.sleep(5)
-        return None
+            else:
+                logger.warning("[herosms] unknown status for %d: %s", activation_id, result)
+                await asyncio.sleep(5)
+
+        if got_code is None:
+            # Timeout — cancel to get refund
+            logger.info("[herosms] timeout on %d — cancelling for refund", activation_id)
+            try:
+                cancel_result = await _get(session, {
+                    "action": "setStatus",
+                    "id":     activation_id,
+                    "status": 6,
+                })
+                logger.info("[herosms] cancel result for %d: %s", activation_id, cancel_result)
+            except Exception as e:
+                logger.error("[herosms] cancel failed for %d: %s", activation_id, e)
+            return None
+
+        return got_code
 
 
 async def set_status(activation_id: int, status: int) -> str:
     """
     Set activation status:
-    1 = SMS received
+    1 = SMS received (notify provider)
     3 = Request another SMS
-    6 = Cancel activation
-    8 = Activation complete
+    6 = Cancel activation (refund)
+    8 = Activation complete (confirm)
     """
     async with aiohttp.ClientSession() as session:
         return await _get(session, {
@@ -111,11 +137,15 @@ async def set_status(activation_id: int, status: int) -> str:
         })
 
 
-async def cancel_number(activation_id: int):
-    """Cancel and refund the number."""
-    await set_status(activation_id, 6)
+async def cancel_number(activation_id: int) -> str:
+    """Cancel and refund the number. Returns API response."""
+    result = await set_status(activation_id, 6)
+    logger.info("[herosms] cancel %d -> %s", activation_id, result)
+    return result
 
 
-async def confirm_number(activation_id: int):
+async def confirm_number(activation_id: int) -> str:
     """Mark activation as complete."""
-    await set_status(activation_id, 8)
+    result = await set_status(activation_id, 8)
+    logger.info("[herosms] confirm %d -> %s", activation_id, result)
+    return result
