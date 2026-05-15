@@ -34,8 +34,7 @@ DATA_DIR      = os.getenv("DATA_DIR", "/app/data")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))
 
-# How many sessions to buy in parallel
-CONCURRENCY   = 5
+CONCURRENCY = 5  # parallel workers
 
 COUNTRY_NAMES = {
     106: "🇰🇿 Kazakhstan",
@@ -48,11 +47,17 @@ COUNTRY_NAMES = {
     7:   "🇻🇳 Vietnam",
 }
 
-# active buying tasks: admin_id -> asyncio.Task
 _active_tasks: dict = {}
 
-# shared progress state per admin
-_progress: dict = defaultdict(lambda: {"success": 0, "failed": 0, "results": [], "done": 0})
+# Lazy lock — created inside event loop
+_sessions_lock: asyncio.Lock | None = None
+
+
+def _get_lock() -> asyncio.Lock:
+    global _sessions_lock
+    if _sessions_lock is None:
+        _sessions_lock = asyncio.Lock()
+    return _sessions_lock
 
 
 class AutoSessionState(StatesGroup):
@@ -60,9 +65,6 @@ class AutoSessionState(StatesGroup):
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
-
-_sessions_lock = asyncio.Lock()
-
 
 def _load_sessions() -> dict:
     try:
@@ -76,8 +78,7 @@ def _load_sessions() -> dict:
 
 
 async def _save_session_safe(session_name: str, info: dict):
-    """Thread-safe session save."""
-    async with _sessions_lock:
+    async with _get_lock():
         data = _load_sessions()
         data[session_name] = info
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -149,12 +150,11 @@ async def _verify_and_enrich(phone: str) -> dict | None:
             pass
 
 
-# ─── single session worker ─────────────────────────────────────────────────────────
+# ─── single slot worker ──────────────────────────────────────────────────────────────
 
-async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
+async def _buy_one(slot: int) -> tuple[bool, str]:
     """
-    Buy ONE session with unlimited retries until success or cancellation.
-    Returns (success, description)
+    Buys ONE valid session. Retries indefinitely until success or cancellation.
     """
     attempt = 0
     while True:
@@ -162,9 +162,8 @@ async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
         activation_id = None
         phone         = None
         client        = None
-
         try:
-            # 1. buy number
+            # 1. buy number (cheapest country first)
             try:
                 activation_id, phone, country_id, price = await get_number_smart("tg")
             except HeroSMSError as e:
@@ -178,10 +177,9 @@ async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
             phone_fmt    = "+" + phone if not phone.startswith("+") else phone
             _remove_session_files(session_name)
 
-            logger.info("[slot%d] attempt=%d phone=%s %s %.3f$",
-                        slot, attempt, phone_fmt, cname, price)
+            logger.info("[slot%d] #%d %s %s %.3f$", slot, attempt, phone_fmt, cname, price)
 
-            # 2. connect
+            # 2. connect telethon
             client = TelegramClient(
                 session_path, API_ID, API_HASH,
                 connection_retries=3, retry_delay=2,
@@ -195,22 +193,22 @@ async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
                     client.send_code_request(phone_fmt), timeout=20
                 )
             except PhoneNumberBannedError:
-                await cancel_number(activation_id)
-                continue
+                await cancel_number(activation_id); continue
             except PhoneNumberInvalidError:
-                await cancel_number(activation_id)
-                continue
+                await cancel_number(activation_id); continue
             except FloodWaitError as e:
                 await cancel_number(activation_id)
-                wait = min(e.seconds, 60)
-                logger.info("[slot%d] FloodWait %ds", slot, e.seconds)
-                await asyncio.sleep(wait)
+                await asyncio.sleep(min(e.seconds, 60))
+                continue
+            except Exception as e:
+                await cancel_number(activation_id)
+                logger.warning("[slot%d] send_code err: %s", slot, e)
+                await asyncio.sleep(5)
                 continue
 
             # 4. wait SMS
             code = await get_sms_code(activation_id, timeout=90)
             if not code:
-                # already refunded
                 logger.info("[slot%d] no SMS — retry", slot)
                 continue
 
@@ -222,19 +220,23 @@ async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
                     timeout=20,
                 )
             except (PhoneCodeExpiredError, PhoneCodeInvalidError):
-                await cancel_number(activation_id)
-                continue
+                await cancel_number(activation_id); continue
             except SessionPasswordNeededError:
-                await cancel_number(activation_id)
-                continue
+                await cancel_number(activation_id); continue
             except FloodWaitError as e:
                 await cancel_number(activation_id)
                 await asyncio.sleep(min(e.seconds, 60))
+                continue
+            except Exception as e:
+                await cancel_number(activation_id)
+                logger.warning("[slot%d] sign_in err: %s", slot, e)
+                await asyncio.sleep(5)
                 continue
 
             # 6. verify
             if not await client.is_user_authorized():
                 await cancel_number(activation_id)
+                logger.info("[slot%d] unauthorized after sign_in", slot)
                 continue
 
             # 7. get me
@@ -282,47 +284,42 @@ async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
                     pass
 
 
-# ─── parallel buyer task ──────────────────────────────────────────────────────────────
+# ─── parallel buyer ───────────────────────────────────────────────────────────────────
 
-async def _buyer_task(count: int, status_msg, bot, chat_id: int, admin_id: int):
-    """
-    Buys `count` sessions using CONCURRENCY parallel workers.
-    Each worker retries indefinitely until it gets one valid session.
-    """
-    prog = _progress[admin_id]
-    prog.update({"success": 0, "failed": 0, "results": [], "done": 0, "total": count})
-
-    # semaphore to limit parallel Telegram connections
-    sem = asyncio.Semaphore(CONCURRENCY)
+async def _buyer_task(count: int, status_msg, bot, chat_id: int):
+    success = 0
+    failed  = 0
+    results = []
+    done    = 0
+    lock    = asyncio.Lock()
 
     async def worker(slot: int):
-        async with sem:
-            ok, desc = await _buy_one(slot, count, admin_id)
-            prog["done"]    += 1
-            prog["results"].append(desc)
+        nonlocal success, failed, done
+        ok, desc = await _buy_one(slot)
+        async with lock:
+            done += 1
+            results.append(desc)
             if ok:
-                prog["success"] += 1
+                success += 1
             else:
-                prog["failed"]  += 1
+                failed += 1
 
-    # progress updater
     async def progress_loop():
-        while prog["done"] < count:
+        while done < count:
             try:
                 await status_msg.edit_text(
-                    f"🔄 خرید سشن — {prog['done']}/{count}\n"
-                    f"✅ موفق: <b>{prog['success']}</b> | "
-                    f"❌ ناموفق: <b>{prog['failed']}</b>\n"
+                    f"🔄 خرید سشن — {done}/{count}\n"
+                    f"✅ موفق: <b>{success}</b> | "
+                    f"❌ ناموفق: <b>{failed}</b>\n"
                     f"⚡ همزمان: <b>{CONCURRENCY}</b> ورکر\n\n"
-                    + "\n".join(prog["results"][-12:]),
+                    + "\n".join(results[-12:]),
                     parse_mode="HTML",
                 )
             except Exception:
                 pass
-            await asyncio.sleep(4)
+            await asyncio.sleep(5)
 
-    # launch all workers + progress loop
-    workers = [asyncio.create_task(worker(i + 1)) for i in range(count)]
+    workers   = [asyncio.create_task(worker(i + 1)) for i in range(count)]
     prog_task = asyncio.create_task(progress_loop())
 
     try:
@@ -330,19 +327,21 @@ async def _buyer_task(count: int, status_msg, bot, chat_id: int, admin_id: int):
     except asyncio.CancelledError:
         for w in workers:
             w.cancel()
-        prog_task.cancel()
         raise
     finally:
         prog_task.cancel()
+        try:
+            await prog_task
+        except asyncio.CancelledError:
+            pass
 
-    # final report
     try:
         await bot.send_message(
             chat_id,
             f"🏁 <b>خرید تموم شد!</b>\n\n"
-            f"✅ موفق: <b>{prog['success']}</b>\n"
-            f"❌ ناموفق: <b>{prog['failed']}</b>\n\n"
-            + "\n".join(prog["results"]),
+            f"✅ موفق: <b>{success}</b>\n"
+            f"❌ ناموفق: <b>{failed}</b>\n\n"
+            + "\n".join(results),
             reply_markup=auto_session_menu(),
             parse_mode="HTML",
         )
@@ -392,9 +391,8 @@ async def autosess_balance(cb: CallbackQuery):
         balance = await get_balance()
         prices  = await get_prices("tg")
         lines   = [f"💰 <b>موجودی:</b> <code>{balance:.2f}$</code>\n",
-                   "📊 <b>کشورهای موجود (ارزون‌ترین اول):</b>"]
-        sorted_p = sorted(prices.items(), key=lambda x: x[1]["cost"])
-        for cid, p in sorted_p:
+                   "📊 <b>کشورها (ارزون‌ترین اول):</b>"]
+        for cid, p in sorted(prices.items(), key=lambda x: x[1]["cost"]):
             n = COUNTRY_NAMES.get(cid, f"C{cid}")
             lines.append(f"  {n}: <code>{p['cost']:.3f}$</code> ({p['count']} عدد)")
         await cb.message.edit_text("\n".join(lines),
@@ -463,12 +461,10 @@ async def autosess_cleanup(cb: CallbackQuery):
             updated[phone] = info
             kept.append(f"✅ +{phone} — @{info['username'] or info['fullname']}")
 
-    async with _sessions_lock:
-        data = {}
-        data.update(updated)
+    async with _get_lock():
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(SESSIONS_FILE, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(updated, f, ensure_ascii=False, indent=2)
 
     lines = [f"🧹 <b>پاکسازی تمام شد!</b>\n",
              f"✅ معتبر: <b>{len(kept)}</b> | 🗑 حذف: <b>{len(removed)}</b>\n"]
@@ -506,6 +502,6 @@ async def autosess_count(msg: Message, state: FSMContext):
     )
 
     task = asyncio.create_task(
-        _buyer_task(count, status_msg, msg.bot, msg.chat.id, msg.from_user.id)
+        _buyer_task(count, status_msg, msg.bot, msg.chat.id)
     )
     _active_tasks[msg.from_user.id] = task
