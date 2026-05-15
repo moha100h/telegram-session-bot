@@ -3,7 +3,6 @@ import logging
 import os
 import json
 import random
-from collections import defaultdict
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -23,6 +22,7 @@ from services.herosms import (
     cancel_number, confirm_number, HeroSMSError,
     PREFERRED_COUNTRIES,
 )
+from services import session_store
 
 logger      = logging.getLogger("auto_session")
 router      = Router()
@@ -30,11 +30,9 @@ router      = Router()
 API_ID        = int(os.getenv("API_ID", "0"))
 API_HASH      = os.getenv("API_HASH", "")
 SESSIONS_DIR  = os.getenv("SESSIONS_DIR", "/app/sessions")
-DATA_DIR      = os.getenv("DATA_DIR", "/app/data")
-SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))
 
-CONCURRENCY = 5  # parallel workers
+CONCURRENCY = 5
 
 COUNTRY_NAMES = {
     106: "🇰🇿 Kazakhstan",
@@ -49,42 +47,12 @@ COUNTRY_NAMES = {
 
 _active_tasks: dict = {}
 
-# Lazy lock — created inside event loop
-_sessions_lock: asyncio.Lock | None = None
-
-
-def _get_lock() -> asyncio.Lock:
-    global _sessions_lock
-    if _sessions_lock is None:
-        _sessions_lock = asyncio.Lock()
-    return _sessions_lock
-
 
 class AutoSessionState(StatesGroup):
     count = State()
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
-
-def _load_sessions() -> dict:
-    try:
-        if os.path.exists(SESSIONS_FILE):
-            with open(SESSIONS_FILE) as f:
-                d = json.load(f)
-                return d if isinstance(d, dict) else {}
-    except Exception:
-        pass
-    return {}
-
-
-async def _save_session_safe(session_name: str, info: dict):
-    async with _get_lock():
-        data = _load_sessions()
-        data[session_name] = info
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(SESSIONS_FILE, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
 
 def _patch_sqlite(client):
     try:
@@ -94,17 +62,6 @@ def _patch_sqlite(client):
             s._conn.execute("PRAGMA journal_mode = WAL")
     except Exception:
         pass
-
-
-def _remove_session_files(phone: str):
-    base = os.path.join(SESSIONS_DIR, phone)
-    for ext in [".session", ".session-shm", ".session-wal", ".session-journal"]:
-        p = base + ext
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
 
 
 async def _set_random_profile(client: TelegramClient):
@@ -121,41 +78,9 @@ async def _set_random_profile(client: TelegramClient):
         logger.warning("[autosess] set_profile: %s", e)
 
 
-async def _verify_and_enrich(phone: str) -> dict | None:
-    session_path = os.path.join(SESSIONS_DIR, phone)
-    client = TelegramClient(session_path, API_ID, API_HASH,
-                            connection_retries=2, retry_delay=2)
-    try:
-        await asyncio.wait_for(client.connect(), timeout=15)
-        _patch_sqlite(client)
-        if not await client.is_user_authorized():
-            return None
-        me = await asyncio.wait_for(client.get_me(), timeout=10)
-        if not me:
-            return None
-        return {
-            "phone":    "+" + phone if not phone.startswith("+") else phone,
-            "verified": True,
-            "username": me.username or "",
-            "fullname": ((me.first_name or "") + " " + (me.last_name or "")).strip(),
-            "user_id":  me.id,
-        }
-    except Exception as e:
-        logger.warning("[autosess] verify %s: %s", phone, e)
-        return None
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-
-
 # ─── single slot worker ──────────────────────────────────────────────────────────────
 
 async def _buy_one(slot: int) -> tuple[bool, str]:
-    """
-    Buys ONE valid session. Retries indefinitely until success or cancellation.
-    """
     attempt = 0
     while True:
         attempt += 1
@@ -163,7 +88,6 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
         phone         = None
         client        = None
         try:
-            # 1. buy number (cheapest country first)
             try:
                 activation_id, phone, country_id, price = await get_number_smart("tg")
             except HeroSMSError as e:
@@ -175,11 +99,10 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
             session_name = phone.lstrip("+")
             session_path = os.path.join(SESSIONS_DIR, session_name)
             phone_fmt    = "+" + phone if not phone.startswith("+") else phone
-            _remove_session_files(session_name)
+            session_store.remove_files(session_name)
 
             logger.info("[slot%d] #%d %s %s %.3f$", slot, attempt, phone_fmt, cname, price)
 
-            # 2. connect telethon
             client = TelegramClient(
                 session_path, API_ID, API_HASH,
                 connection_retries=3, retry_delay=2,
@@ -187,7 +110,6 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
             await asyncio.wait_for(client.connect(), timeout=20)
             _patch_sqlite(client)
 
-            # 3. send code
             try:
                 sent = await asyncio.wait_for(
                     client.send_code_request(phone_fmt), timeout=20
@@ -202,17 +124,14 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
                 continue
             except Exception as e:
                 await cancel_number(activation_id)
-                logger.warning("[slot%d] send_code err: %s", slot, e)
+                logger.warning("[slot%d] send_code: %s", slot, e)
                 await asyncio.sleep(5)
                 continue
 
-            # 4. wait SMS
             code = await get_sms_code(activation_id, timeout=90)
             if not code:
-                logger.info("[slot%d] no SMS — retry", slot)
                 continue
 
-            # 5. sign in
             try:
                 await asyncio.wait_for(
                     client.sign_in(phone_fmt, code,
@@ -229,25 +148,21 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
                 continue
             except Exception as e:
                 await cancel_number(activation_id)
-                logger.warning("[slot%d] sign_in err: %s", slot, e)
+                logger.warning("[slot%d] sign_in: %s", slot, e)
                 await asyncio.sleep(5)
                 continue
 
-            # 6. verify
             if not await client.is_user_authorized():
                 await cancel_number(activation_id)
-                logger.info("[slot%d] unauthorized after sign_in", slot)
                 continue
 
-            # 7. get me
             me = await asyncio.wait_for(client.get_me(), timeout=10)
             if not me.first_name:
                 await _set_random_profile(client)
                 me = await client.get_me()
 
-            # 8. confirm + save
             await confirm_number(activation_id)
-            await _save_session_safe(session_name, {
+            await session_store.save_one(session_name, {
                 "phone":    phone_fmt,
                 "verified": True,
                 "username": me.username or "",
@@ -349,7 +264,7 @@ async def _buyer_task(count: int, status_msg, bot, chat_id: int):
         pass
 
 
-# ─── menus ────────────────────────────────────────────────────────────────────
+# ─── menu ──────────────────────────────────────────────────────────────────────────────────
 
 def auto_session_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -435,45 +350,6 @@ async def autosess_cancel(cb: CallbackQuery):
         )
     else:
         await cb.answer("ℹ️ خریدی در جریان نیست.", show_alert=True)
-
-
-@router.callback_query(F.data == "autosess_cleanup")
-async def autosess_cleanup(cb: CallbackQuery):
-    await cb.answer()
-    msg = await cb.message.edit_text("🔍 در حال بررسی سشن‌ها...", parse_mode="HTML")
-
-    session_files = [
-        f.replace(".session", "")
-        for f in os.listdir(SESSIONS_DIR)
-        if f.endswith(".session")
-    ]
-
-    removed = []
-    updated = {}
-    kept    = []
-
-    for phone in session_files:
-        info = await _verify_and_enrich(phone)
-        if info is None:
-            _remove_session_files(phone)
-            removed.append(phone)
-        else:
-            updated[phone] = info
-            kept.append(f"✅ +{phone} — @{info['username'] or info['fullname']}")
-
-    async with _get_lock():
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(SESSIONS_FILE, "w") as f:
-            json.dump(updated, f, ensure_ascii=False, indent=2)
-
-    lines = [f"🧹 <b>پاکسازی تمام شد!</b>\n",
-             f"✅ معتبر: <b>{len(kept)}</b> | 🗑 حذف: <b>{len(removed)}</b>\n"]
-    lines += kept[:20]
-    if removed:
-        lines.append("\n<b>حذف شده:</b>")
-        lines += [f"❌ +{p}" for p in removed[:20]]
-
-    await msg.edit_text("\n".join(lines), reply_markup=auto_session_menu(), parse_mode="HTML")
 
 
 @router.message(AutoSessionState.count)
