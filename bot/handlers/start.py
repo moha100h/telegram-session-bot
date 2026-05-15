@@ -15,19 +15,20 @@ def is_admin(user_id: int) -> bool:
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📱 سشن‌ها", callback_data="menu_sessions"),
-            InlineKeyboardButton(text="⚙️ تسک‌ها", callback_data="menu_tasks"),
+            InlineKeyboardButton(text="📱 سشن‌ها",    callback_data="menu_sessions"),
+            InlineKeyboardButton(text="⚙️ تسک‌ها",    callback_data="menu_tasks"),
         ],
         [
-            InlineKeyboardButton(text="📊 آمار", callback_data="menu_stats"),
-            InlineKeyboardButton(text="💾 بکاپ", callback_data="menu_backup"),
+            InlineKeyboardButton(text="📊 آمار",       callback_data="menu_stats"),
+            InlineKeyboardButton(text="💾 بکاپ",       callback_data="menu_backup"),
         ],
         [
-            InlineKeyboardButton(text="🌐 پروکسی", callback_data="menu_proxy"),
+            InlineKeyboardButton(text="🌐 پروکسی",     callback_data="menu_proxy"),
             InlineKeyboardButton(text="📞 شماره مجازی", callback_data="menu_virtual"),
         ],
         [
-            InlineKeyboardButton(text="🔥 Warmer", callback_data="menu_warmer"),
+            InlineKeyboardButton(text="🔥 Warmer",      callback_data="menu_warmer"),
+            InlineKeyboardButton(text="🤖 خرید سشن",   callback_data="menu_autosession"),
         ],
     ])
 

@@ -6,7 +6,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
-from handlers import start, sessions, tasks, stats, backup, proxy, virtual_number, warmer_handler
+from handlers import start, sessions, tasks, stats, backup, proxy, virtual_number, warmer_handler, auto_session
 from services.backup import BackupService
 from services.proxy_fetcher import ProxyFetcher
 from services.session_checker import SessionChecker
@@ -45,6 +45,7 @@ async def main():
     dp.include_router(proxy.router)
     dp.include_router(virtual_number.router)
     dp.include_router(warmer_handler.router)
+    dp.include_router(auto_session.router)
 
     asyncio.create_task(BackupService(bot, redis).run())
     asyncio.create_task(ProxyFetcher(redis).run())
