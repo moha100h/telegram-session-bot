@@ -1,12 +1,22 @@
+"""
+SessionChecker — runs every 6h automatically.
+Checks ALL sessions, auto-deletes truly invalid ones,
+reports results to admin.
+"""
 import asyncio
 import logging
 import os
-from aiogram import Bot
-from services.session_manager import get_session_names, verify_session
 
-logger = logging.getLogger("session_checker")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-CHECK_INTERVAL = 6 * 3600
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+from services import session_store
+from services.session_validator import validate_session, INVALID_ERRORS
+
+logger         = logging.getLogger("session_checker")
+ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+CHECK_INTERVAL = 6 * 3600   # every 6 hours
+CONCURRENCY    = 8           # parallel checks
 
 
 class SessionChecker:
@@ -14,54 +24,80 @@ class SessionChecker:
         self.bot = bot
 
     async def run(self):
-        await asyncio.sleep(60)
+        await asyncio.sleep(120)   # wait for bot to fully start
         while True:
             try:
-                await self._check_all()
+                await self._run_once(auto=True)
             except Exception as e:
-                logger.error("[SessionChecker] %s", e)
+                logger.error("[checker] %s", e, exc_info=True)
             await asyncio.sleep(CHECK_INTERVAL)
 
-    async def _check_all(self):
-        names = await get_session_names()
-        if not names:
+    async def _run_once(self, auto: bool = True):
+        keys   = session_store.list_session_files()
+        total  = len(keys)
+        if total == 0:
+            logger.info("[checker] no sessions to check")
             return
-        failed = []
-        for name in names:
-            r = await verify_session(name)
-            if not r["ok"]:
-                failed.append({"name": name, "error": r.get("error", "unknown")})
-            await asyncio.sleep(1)
-        if not failed:
-            logger.info("[SessionChecker] All %d sessions OK", len(names))
-            return
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        ok_count = len(names) - len(failed)
+
+        logger.info("[checker] checking %d sessions (auto=%s)", total, auto)
+
+        valid   = []   # list of info dicts
+        invalid = []   # list of (key, reason)
+        sem     = asyncio.Semaphore(CONCURRENCY)
+        lock    = asyncio.Lock()
+
+        async def check_one(key: str):
+            async with sem:
+                result = await validate_session(key)
+            async with lock:
+                if result["ok"]:
+                    valid.append(result["info"])
+                else:
+                    reason = result["reason"]
+                    if reason in INVALID_ERRORS:
+                        # Truly invalid — auto delete
+                        session_store.remove_files(key)
+                        invalid.append((key, reason))
+                        logger.info("[checker] auto-deleted %s (%s)", key, reason)
+                    else:
+                        # Temporary error (FloodWait, network) — keep
+                        valid.append({"phone": "+" + key, "username": "",
+                                      "fullname": "", "user_id": "",
+                                      "_temp_error": reason})
+                        logger.info("[checker] kept %s (temp: %s)", key, reason)
+
+        await asyncio.gather(*[check_one(k) for k in keys])
+
+        # Rebuild sessions.json: only valid sessions
+        clean = {}
+        for info in valid:
+            if "_temp_error" not in info:
+                key = info.get("phone", "").lstrip("+")
+                if key:
+                    clean[key] = info
+        await session_store.replace_all(clean)
+
+        logger.info("[checker] done. valid=%d deleted=%d", len(clean), len(invalid))
+
+        # Notify admin
+        if auto and (invalid or len(clean) > 0):
+            await self._notify(len(keys), clean, invalid)
+
+    async def _notify(self, total: int, clean: dict, invalid: list):
         lines = [
-            "\u26a0\ufe0f <b>\u0628\u0631\u0631\u0633\u06cc \u062e\u0648\u062f\u06a9\u0627\u0631 \u0633\u0634\u0646\u200c\u0647\u0627</b>\n",
-            "\u2705 \u0633\u0627\u0644\u0645: <b>" + str(ok_count) + "</b>",
-            "\u274c \u0645\u0634\u06a9\u0644\u062f\u0627\u0631: <b>" + str(len(failed)) + "</b>\n",
+            f"✅ <b>بررسی خودکار سشن‌ها</b>",
+            f"📊 کل: <b>{total}</b> | "
+            f"✅ سالم: <b>{len(clean)}</b> | "
+            f"🗑 حذف شد: <b>{len(invalid)}</b>",
         ]
-        for f in failed:
-            lines.append("\u2022 <code>" + f["name"] + "</code>: " + str(f["error"]))
-        buttons = []
-        for f in failed:
-            buttons.append([
-                InlineKeyboardButton(
-                    text="\ud83d\udd04 \u062a\u0633\u062a \u0645\u062c\u062f\u062f " + f["name"],
-                    callback_data="sc_retest_" + f["name"]
-                ),
-                InlineKeyboardButton(
-                    text="\ud83d\uddd1 \u062d\u0630\u0641 " + f["name"],
-                    callback_data="sc_delete_" + f["name"]
-                ),
-            ])
+        if invalid:
+            lines.append("")
+            lines.append("🗑 <b>حذف شده:</b>")
+            for key, reason in invalid[:20]:
+                lines.append(f"  • <code>+{key}</code> — {reason}")
         try:
             await self.bot.send_message(
-                ADMIN_ID,
-                "\n".join(lines),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                ADMIN_ID, "\n".join(lines), parse_mode="HTML"
             )
         except Exception as e:
-            logger.error("[SessionChecker] notify failed: %s", e)
+            logger.error("[checker] notify: %s", e)
