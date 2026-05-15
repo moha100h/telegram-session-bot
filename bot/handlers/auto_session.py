@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import random
+from collections import defaultdict
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -33,8 +34,10 @@ DATA_DIR      = os.getenv("DATA_DIR", "/app/data")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))
 
+# How many sessions to buy in parallel
+CONCURRENCY   = 5
+
 COUNTRY_NAMES = {
-    0:   "🌍 خودکار",
     106: "🇰🇿 Kazakhstan",
     1:   "🇷🇺 Russia",
     14:  "🇺🇦 Ukraine",
@@ -42,10 +45,14 @@ COUNTRY_NAMES = {
     22:  "🇵🇭 Philippines",
     12:  "🇧🇩 Bangladesh",
     31:  "🇿🇦 South Africa",
+    7:   "🇻🇳 Vietnam",
 }
 
 # active buying tasks: admin_id -> asyncio.Task
-_active_tasks: dict[int, asyncio.Task] = {}
+_active_tasks: dict = {}
+
+# shared progress state per admin
+_progress: dict = defaultdict(lambda: {"success": 0, "failed": 0, "results": [], "done": 0})
 
 
 class AutoSessionState(StatesGroup):
@@ -53,6 +60,9 @@ class AutoSessionState(StatesGroup):
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
+
+_sessions_lock = asyncio.Lock()
+
 
 def _load_sessions() -> dict:
     try:
@@ -65,10 +75,14 @@ def _load_sessions() -> dict:
     return {}
 
 
-def _save_sessions(data: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SESSIONS_FILE, "w") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+async def _save_session_safe(session_name: str, info: dict):
+    """Thread-safe session save."""
+    async with _sessions_lock:
+        data = _load_sessions()
+        data[session_name] = info
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def _patch_sqlite(client):
@@ -103,7 +117,7 @@ async def _set_random_profile(client: TelegramClient):
             from telethon.tl.functions.account import UpdateProfileRequest
             await client(UpdateProfileRequest(first_name=fn, last_name=ln))
     except Exception as e:
-        logger.warning("[autosess] set_profile failed: %s", e)
+        logger.warning("[autosess] set_profile: %s", e)
 
 
 async def _verify_and_enrich(phone: str) -> dict | None:
@@ -135,127 +149,103 @@ async def _verify_and_enrich(phone: str) -> dict | None:
             pass
 
 
-# ─── core buyer loop ──────────────────────────────────────────────────────────
+# ─── single session worker ─────────────────────────────────────────────────────────
 
-async def _buy_one_session(attempt_num: int, total: int, status_msg) -> tuple[bool, str]:
+async def _buy_one(slot: int, total: int, admin_id: int) -> tuple[bool, str]:
     """
-    Try to buy and create ONE valid session.
-    Retries internally on NO_NUMBERS, bad SMS, etc.
-    Returns (success: bool, description: str)
+    Buy ONE session with unlimited retries until success or cancellation.
+    Returns (success, description)
     """
-    MAX_INNER_RETRIES = 10  # retries per single slot
-    inner = 0
-
-    while inner < MAX_INNER_RETRIES:
-        inner += 1
+    attempt = 0
+    while True:
+        attempt += 1
         activation_id = None
         phone         = None
         client        = None
 
         try:
-            # ── 1. buy number (smart country picker) ──
+            # 1. buy number
             try:
                 activation_id, phone, country_id, price = await get_number_smart("tg")
             except HeroSMSError as e:
-                # No numbers anywhere — wait and retry
-                logger.warning("[autosess] no numbers (try %d): %s", inner, e)
-                await asyncio.sleep(15)
+                logger.warning("[slot%d] no numbers: %s — wait 20s", slot, e)
+                await asyncio.sleep(20)
                 continue
 
             cname        = COUNTRY_NAMES.get(country_id, f"C{country_id}")
             session_name = phone.lstrip("+")
             session_path = os.path.join(SESSIONS_DIR, session_name)
+            phone_fmt    = "+" + phone if not phone.startswith("+") else phone
             _remove_session_files(session_name)
 
-            phone_fmt = "+" + phone if not phone.startswith("+") else phone
+            logger.info("[slot%d] attempt=%d phone=%s %s %.3f$",
+                        slot, attempt, phone_fmt, cname, price)
 
-            # ── 2. connect telethon ──
+            # 2. connect
             client = TelegramClient(
                 session_path, API_ID, API_HASH,
-                connection_retries=3, retry_delay=3,
+                connection_retries=3, retry_delay=2,
             )
             await asyncio.wait_for(client.connect(), timeout=20)
             _patch_sqlite(client)
 
-            # ── 3. send code ──
+            # 3. send code
             try:
                 sent = await asyncio.wait_for(
                     client.send_code_request(phone_fmt), timeout=20
                 )
             except PhoneNumberBannedError:
                 await cancel_number(activation_id)
-                logger.info("[autosess] %s banned, refund, retry", phone_fmt)
                 continue
             except PhoneNumberInvalidError:
                 await cancel_number(activation_id)
                 continue
             except FloodWaitError as e:
                 await cancel_number(activation_id)
-                wait = min(e.seconds, 120)
-                logger.info("[autosess] FloodWait %ds", e.seconds)
+                wait = min(e.seconds, 60)
+                logger.info("[slot%d] FloodWait %ds", slot, e.seconds)
                 await asyncio.sleep(wait)
                 continue
 
-            # ── 4. update status ──
-            try:
-                await status_msg.edit_text(
-                    f"🔄 سشن {attempt_num}/{total}\n"
-                    f"📱 شماره: <code>{phone_fmt}</code> ({cname})\n"
-                    f"⏳ منتظر SMS... (تلاش {inner}/{MAX_INNER_RETRIES})",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-            # ── 5. wait for SMS ──
-            code = await get_sms_code(activation_id, timeout=120)
-
+            # 4. wait SMS
+            code = await get_sms_code(activation_id, timeout=90)
             if not code:
-                # already refunded inside get_sms_code
-                logger.info("[autosess] no SMS for %s, retry", phone_fmt)
+                # already refunded
+                logger.info("[slot%d] no SMS — retry", slot)
                 continue
 
-            # ── 6. sign in ──
+            # 5. sign in
             try:
                 await asyncio.wait_for(
                     client.sign_in(phone_fmt, code,
                                    phone_code_hash=sent.phone_code_hash),
                     timeout=20,
                 )
-            except PhoneCodeExpiredError:
-                await cancel_number(activation_id)
-                continue
-            except PhoneCodeInvalidError:
+            except (PhoneCodeExpiredError, PhoneCodeInvalidError):
                 await cancel_number(activation_id)
                 continue
             except SessionPasswordNeededError:
                 await cancel_number(activation_id)
-                logger.info("[autosess] 2FA on %s, refund, retry", phone_fmt)
                 continue
             except FloodWaitError as e:
                 await cancel_number(activation_id)
-                await asyncio.sleep(min(e.seconds, 120))
+                await asyncio.sleep(min(e.seconds, 60))
                 continue
 
-            # ── 7. verify ──
+            # 6. verify
             if not await client.is_user_authorized():
                 await cancel_number(activation_id)
                 continue
 
-            # ── 8. get user info ──
+            # 7. get me
             me = await asyncio.wait_for(client.get_me(), timeout=10)
-
-            # ── 9. set profile if missing ──
-            if me and not me.first_name:
+            if not me.first_name:
                 await _set_random_profile(client)
                 me = await client.get_me()
 
-            # ── 10. confirm purchase ──
+            # 8. confirm + save
             await confirm_number(activation_id)
-
-            # ── 11. save ──
-            sessions_data = _load_sessions()
-            sessions_data[session_name] = {
+            await _save_session_safe(session_name, {
                 "phone":    phone_fmt,
                 "verified": True,
                 "username": me.username or "",
@@ -263,11 +253,10 @@ async def _buy_one_session(attempt_num: int, total: int, status_msg) -> tuple[bo
                 "user_id":  me.id,
                 "country":  country_id,
                 "price":    price,
-            }
-            _save_sessions(sessions_data)
+            })
 
             name_str = f"@{me.username}" if me.username else (me.first_name or "?")
-            logger.info("[autosess] ✅ saved %s — %s", session_name, name_str)
+            logger.info("[slot%d] ✅ %s — %s (attempt %d)", slot, phone_fmt, name_str, attempt)
             return True, f"✅ {phone_fmt} — {name_str} ({cname})"
 
         except asyncio.CancelledError:
@@ -283,9 +272,8 @@ async def _buy_one_session(attempt_num: int, total: int, status_msg) -> tuple[bo
                     await cancel_number(activation_id)
                 except Exception:
                     pass
-            logger.error("[autosess] unexpected: %s", e, exc_info=True)
+            logger.error("[slot%d] unexpected: %s", slot, e, exc_info=True)
             await asyncio.sleep(5)
-            continue
         finally:
             if client:
                 try:
@@ -293,47 +281,68 @@ async def _buy_one_session(attempt_num: int, total: int, status_msg) -> tuple[bo
                 except Exception:
                     pass
 
-    return False, f"❌ سشن {attempt_num} — پس از {MAX_INNER_RETRIES} تلاش ناموفق"
 
+# ─── parallel buyer task ──────────────────────────────────────────────────────────────
 
-async def _buyer_task(count: int, status_msg, bot, chat_id: int):
-    """Main background task: buys `count` sessions, fully automatic."""
-    success = 0
-    failed  = 0
-    results = []
+async def _buyer_task(count: int, status_msg, bot, chat_id: int, admin_id: int):
+    """
+    Buys `count` sessions using CONCURRENCY parallel workers.
+    Each worker retries indefinitely until it gets one valid session.
+    """
+    prog = _progress[admin_id]
+    prog.update({"success": 0, "failed": 0, "results": [], "done": 0, "total": count})
 
-    for i in range(count):
-        if asyncio.current_task().cancelled():
-            break
+    # semaphore to limit parallel Telegram connections
+    sem = asyncio.Semaphore(CONCURRENCY)
 
-        ok, desc = await _buy_one_session(i + 1, count, status_msg)
-        if ok:
-            success += 1
-        else:
-            failed += 1
-        results.append(desc)
+    async def worker(slot: int):
+        async with sem:
+            ok, desc = await _buy_one(slot, count, admin_id)
+            prog["done"]    += 1
+            prog["results"].append(desc)
+            if ok:
+                prog["success"] += 1
+            else:
+                prog["failed"]  += 1
 
-        # progress
-        try:
-            await status_msg.edit_text(
-                f"🔄 پیشرفت: {i+1}/{count}\n"
-                f"✅ موفق: {success} | ❌ ناموفق: {failed}\n\n"
-                + "\n".join(results[-10:]),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+    # progress updater
+    async def progress_loop():
+        while prog["done"] < count:
+            try:
+                await status_msg.edit_text(
+                    f"🔄 خرید سشن — {prog['done']}/{count}\n"
+                    f"✅ موفق: <b>{prog['success']}</b> | "
+                    f"❌ ناموفق: <b>{prog['failed']}</b>\n"
+                    f"⚡ همزمان: <b>{CONCURRENCY}</b> ورکر\n\n"
+                    + "\n".join(prog["results"][-12:]),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(4)
 
-        await asyncio.sleep(2)
+    # launch all workers + progress loop
+    workers = [asyncio.create_task(worker(i + 1)) for i in range(count)]
+    prog_task = asyncio.create_task(progress_loop())
 
-    # final
+    try:
+        await asyncio.gather(*workers)
+    except asyncio.CancelledError:
+        for w in workers:
+            w.cancel()
+        prog_task.cancel()
+        raise
+    finally:
+        prog_task.cancel()
+
+    # final report
     try:
         await bot.send_message(
             chat_id,
-            f"🏁 <b>خرید سشن تموم شد!</b>\n\n"
-            f"✅ موفق: <b>{success}</b>\n"
-            f"❌ ناموفق: <b>{failed}</b>\n\n"
-            + "\n".join(results),
+            f"🏁 <b>خرید تموم شد!</b>\n\n"
+            f"✅ موفق: <b>{prog['success']}</b>\n"
+            f"❌ ناموفق: <b>{prog['failed']}</b>\n\n"
+            + "\n".join(prog["results"]),
             reply_markup=auto_session_menu(),
             parse_mode="HTML",
         )
@@ -383,12 +392,11 @@ async def autosess_balance(cb: CallbackQuery):
         balance = await get_balance()
         prices  = await get_prices("tg")
         lines   = [f"💰 <b>موجودی:</b> <code>{balance:.2f}$</code>\n",
-                   "📊 <b>کشورهای موجود:</b>"]
-        for cid in PREFERRED_COUNTRIES:
-            if cid in prices:
-                n = COUNTRY_NAMES.get(cid, f"C{cid}")
-                p = prices[cid]
-                lines.append(f"  {n}: <code>{p['cost']:.3f}$</code> ({p['count']} عدد)")
+                   "📊 <b>کشورهای موجود (ارزون‌ترین اول):</b>"]
+        sorted_p = sorted(prices.items(), key=lambda x: x[1]["cost"])
+        for cid, p in sorted_p:
+            n = COUNTRY_NAMES.get(cid, f"C{cid}")
+            lines.append(f"  {n}: <code>{p['cost']:.3f}$</code> ({p['count']} عدد)")
         await cb.message.edit_text("\n".join(lines),
                                    reply_markup=auto_session_menu(), parse_mode="HTML")
     except HeroSMSError as e:
@@ -401,15 +409,15 @@ async def autosess_start(cb: CallbackQuery, state: FSMContext):
     try:
         balance = await get_balance()
         cid, price, avail = await get_best_country("tg")
-        cname       = COUNTRY_NAMES.get(cid, f"C{cid}")
-        max_buy     = min(int(balance / price), avail, 50) if price > 0 else 0
+        cname   = COUNTRY_NAMES.get(cid, f"C{cid}")
+        max_buy = min(int(balance / price), avail, 50) if price > 0 else 0
         await cb.message.edit_text(
             f"🤖 <b>خرید سشن</b>\n"
             f"💰 موجودی: <code>{balance:.2f}$</code>\n"
-            f"🌍 بهترین کشور: <b>{cname}</b>\n"
-            f"💵 قیمت: <code>{price:.3f}$</code> | موجود: <code>{avail}</code>\n"
-            f"📦 حداکثر: <code>{max_buy}</code> سشن\n\n"
-            f"چند سشن می‌خوای؟ (1–{min(max_buy,50)})",
+            f"🌍 ارزون‌ترین: <b>{cname}</b> — <code>{price:.3f}$</code>\n"
+            f"📦 موجود: <code>{avail}</code> | ⚡ همزمان: <b>{CONCURRENCY}</b> ورکر\n"
+            f"📊 حداکثر: <code>{max_buy}</code> سشن\n\n"
+            f"چند سشن می‌خوای؟ (1–{min(max_buy, 50)})",
             parse_mode="HTML",
         )
         await state.set_state(AutoSessionState.count)
@@ -424,14 +432,11 @@ async def autosess_cancel(cb: CallbackQuery):
     if task and not task.done():
         task.cancel()
         await cb.message.edit_text(
-            "⏹ <b>خرید لغو شد.</b>\nسشن‌های خریداری شده حفظ می‌مانن.",
+            "⏹ <b>خرید لغو شد.</b>",
             reply_markup=auto_session_menu(), parse_mode="HTML",
         )
     else:
-        await cb.message.edit_text(
-            "ℹ️ خریدی در جریان نیست.",
-            reply_markup=auto_session_menu(), parse_mode="HTML",
-        )
+        await cb.answer("ℹ️ خریدی در جریان نیست.", show_alert=True)
 
 
 @router.callback_query(F.data == "autosess_cleanup")
@@ -439,7 +444,6 @@ async def autosess_cleanup(cb: CallbackQuery):
     await cb.answer()
     msg = await cb.message.edit_text("🔍 در حال بررسی سشن‌ها...", parse_mode="HTML")
 
-    sessions_data = _load_sessions()
     session_files = [
         f.replace(".session", "")
         for f in os.listdir(SESSIONS_DIR)
@@ -454,18 +458,17 @@ async def autosess_cleanup(cb: CallbackQuery):
         info = await _verify_and_enrich(phone)
         if info is None:
             _remove_session_files(phone)
-            sessions_data.pop(phone, None)
             removed.append(phone)
         else:
             updated[phone] = info
             kept.append(f"✅ +{phone} — @{info['username'] or info['fullname']}")
 
-    for phone in list(sessions_data.keys()):
-        if phone not in updated:
-            sessions_data.pop(phone, None)
-
-    sessions_data.update(updated)
-    _save_sessions(sessions_data)
+    async with _sessions_lock:
+        data = {}
+        data.update(updated)
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     lines = [f"🧹 <b>پاکسازی تمام شد!</b>\n",
              f"✅ معتبر: <b>{len(kept)}</b> | 🗑 حذف: <b>{len(removed)}</b>\n"]
@@ -492,19 +495,17 @@ async def autosess_count(msg: Message, state: FSMContext):
 
     await state.clear()
 
-    # cancel previous task if running
     old = _active_tasks.get(msg.from_user.id)
     if old and not old.done():
         old.cancel()
 
     status_msg = await msg.answer(
-        f"🚀 شروع خرید <b>{count}</b> سشن خودکار...\n"
-        f"🔄 تا زمانی که همه سشن‌ها ساخته نشن، ادامه می‌دهد.\n"
-        f"⏹ برای لغو دکمه ‘⏹ لغو خرید’ را بزن.",
+        f"🚀 شروع خرید <b>{count}</b> سشن — ⚡ <b>{CONCURRENCY}</b> ورکر همزمان\n"
+        f"⏹ برای لغو: دکمه ‘⏹ لغو خرید’",
         parse_mode="HTML",
     )
 
     task = asyncio.create_task(
-        _buyer_task(count, status_msg, msg.bot, msg.chat.id)
+        _buyer_task(count, status_msg, msg.bot, msg.chat.id, msg.from_user.id)
     )
     _active_tasks[msg.from_user.id] = task
