@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import random
+import time
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -81,13 +82,19 @@ async def _set_random_profile(client: TelegramClient):
 # ─── single slot worker ──────────────────────────────────────────────────────────────
 
 async def _buy_one(slot: int) -> tuple[bool, str]:
+    """
+    Buys ONE valid session. Retries indefinitely until success or cancellation.
+    """
     attempt = 0
+    logger.info("[slot%d] started", slot)
+
     while True:
         attempt += 1
         activation_id = None
         phone         = None
         client        = None
         try:
+            # 1. buy number
             try:
                 activation_id, phone, country_id, price = await get_number_smart("tg")
             except HeroSMSError as e:
@@ -101,8 +108,10 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
             phone_fmt    = "+" + phone if not phone.startswith("+") else phone
             session_store.remove_files(session_name)
 
-            logger.info("[slot%d] #%d %s %s %.3f$", slot, attempt, phone_fmt, cname, price)
+            logger.info("[slot%d] #%d bought %s %s %.3f$",
+                        slot, attempt, phone_fmt, cname, price)
 
+            # 2. connect
             client = TelegramClient(
                 session_path, API_ID, API_HASH,
                 connection_retries=3, retry_delay=2,
@@ -110,28 +119,39 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
             await asyncio.wait_for(client.connect(), timeout=20)
             _patch_sqlite(client)
 
+            # 3. send code
             try:
                 sent = await asyncio.wait_for(
                     client.send_code_request(phone_fmt), timeout=20
                 )
+                logger.info("[slot%d] code sent to %s", slot, phone_fmt)
             except PhoneNumberBannedError:
+                logger.info("[slot%d] %s banned", slot, phone_fmt)
                 await cancel_number(activation_id); continue
             except PhoneNumberInvalidError:
+                logger.info("[slot%d] %s invalid", slot, phone_fmt)
                 await cancel_number(activation_id); continue
             except FloodWaitError as e:
+                logger.info("[slot%d] FloodWait %ds", slot, e.seconds)
                 await cancel_number(activation_id)
                 await asyncio.sleep(min(e.seconds, 60))
                 continue
             except Exception as e:
+                logger.warning("[slot%d] send_code err: %s", slot, e)
                 await cancel_number(activation_id)
-                logger.warning("[slot%d] send_code: %s", slot, e)
                 await asyncio.sleep(5)
                 continue
 
+            # 4. wait SMS
+            logger.info("[slot%d] waiting SMS for %s...", slot, phone_fmt)
             code = await get_sms_code(activation_id, timeout=90)
             if not code:
+                logger.info("[slot%d] no SMS for %s", slot, phone_fmt)
                 continue
 
+            logger.info("[slot%d] got code=%s for %s", slot, code, phone_fmt)
+
+            # 5. sign in
             try:
                 await asyncio.wait_for(
                     client.sign_in(phone_fmt, code,
@@ -139,28 +159,34 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
                     timeout=20,
                 )
             except (PhoneCodeExpiredError, PhoneCodeInvalidError):
+                logger.info("[slot%d] bad code for %s", slot, phone_fmt)
                 await cancel_number(activation_id); continue
             except SessionPasswordNeededError:
+                logger.info("[slot%d] 2FA on %s", slot, phone_fmt)
                 await cancel_number(activation_id); continue
             except FloodWaitError as e:
                 await cancel_number(activation_id)
                 await asyncio.sleep(min(e.seconds, 60))
                 continue
             except Exception as e:
+                logger.warning("[slot%d] sign_in err: %s", slot, e)
                 await cancel_number(activation_id)
-                logger.warning("[slot%d] sign_in: %s", slot, e)
                 await asyncio.sleep(5)
                 continue
 
+            # 6. verify
             if not await client.is_user_authorized():
+                logger.info("[slot%d] unauthorized after sign_in %s", slot, phone_fmt)
                 await cancel_number(activation_id)
                 continue
 
+            # 7. get me
             me = await asyncio.wait_for(client.get_me(), timeout=10)
             if not me.first_name:
                 await _set_random_profile(client)
                 me = await client.get_me()
 
+            # 8. confirm + save
             await confirm_number(activation_id)
             await session_store.save_one(session_name, {
                 "phone":    phone_fmt,
@@ -177,6 +203,7 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
             return True, f"✅ {phone_fmt} — {name_str} ({cname})"
 
         except asyncio.CancelledError:
+            logger.info("[slot%d] cancelled", slot)
             if activation_id:
                 try:
                     await cancel_number(activation_id)
@@ -201,39 +228,65 @@ async def _buy_one(slot: int) -> tuple[bool, str]:
 
 # ─── parallel buyer ───────────────────────────────────────────────────────────────────
 
+class _Progress:
+    """Thread-safe progress tracker."""
+    def __init__(self, total: int):
+        self.total   = total
+        self.done    = 0
+        self.success = 0
+        self.failed  = 0
+        self.results: list[str] = []
+        self._lock   = asyncio.Lock()
+        self.started_at = time.monotonic()
+
+    async def record(self, ok: bool, desc: str):
+        async with self._lock:
+            self.done += 1
+            self.results.append(desc)
+            if ok:
+                self.success += 1
+            else:
+                self.failed += 1
+
+    def active_workers(self) -> int:
+        """Estimate active workers = total - done (capped at CONCURRENCY)."""
+        return min(self.total - self.done, CONCURRENCY)
+
+    def elapsed(self) -> str:
+        s = int(time.monotonic() - self.started_at)
+        return f"{s//60}m{s%60:02d}s"
+
+
 async def _buyer_task(count: int, status_msg, bot, chat_id: int):
-    success = 0
-    failed  = 0
-    results = []
-    done    = 0
-    lock    = asyncio.Lock()
+    prog = _Progress(count)
 
     async def worker(slot: int):
-        nonlocal success, failed, done
         ok, desc = await _buy_one(slot)
-        async with lock:
-            done += 1
-            results.append(desc)
-            if ok:
-                success += 1
-            else:
-                failed += 1
+        await prog.record(ok, desc)
 
     async def progress_loop():
-        while done < count:
+        while prog.done < prog.total:
+            active = min(prog.total - prog.done, CONCURRENCY)
             try:
+                lines = [
+                    f"🔄 خرید سشن — {prog.done}/{prog.total}",
+                    f"✅ موفق: <b>{prog.success}</b> | "
+                    f"❌ ناموفق: <b>{prog.failed}</b>",
+                    f"⚡ ورکر فعال: <b>{active}</b> | "
+                    f"⏱ {prog.elapsed()}",
+                ]
+                if prog.results:
+                    lines.append("")
+                    lines.extend(prog.results[-10:])
                 await status_msg.edit_text(
-                    f"🔄 خرید سشن — {done}/{count}\n"
-                    f"✅ موفق: <b>{success}</b> | "
-                    f"❌ ناموفق: <b>{failed}</b>\n"
-                    f"⚡ همزمان: <b>{CONCURRENCY}</b> ورکر\n\n"
-                    + "\n".join(results[-12:]),
+                    "\n".join(lines),
                     parse_mode="HTML",
                 )
             except Exception:
                 pass
-            await asyncio.sleep(5)
+            await asyncio.sleep(4)
 
+    logger.info("[buyer] launching %d workers", count)
     workers   = [asyncio.create_task(worker(i + 1)) for i in range(count)]
     prog_task = asyncio.create_task(progress_loop())
 
@@ -250,18 +303,24 @@ async def _buyer_task(count: int, status_msg, bot, chat_id: int):
         except asyncio.CancelledError:
             pass
 
+    logger.info("[buyer] done. success=%d failed=%d", prog.success, prog.failed)
+
     try:
+        final_lines = [
+            f"🏁 <b>خرید تموم شد!</b>",
+            f"✅ موفق: <b>{prog.success}</b> | "
+            f"❌ ناموفق: <b>{prog.failed}</b> | "
+            f"⏱ {prog.elapsed()}",
+            "",
+        ] + prog.results
         await bot.send_message(
             chat_id,
-            f"🏁 <b>خرید تموم شد!</b>\n\n"
-            f"✅ موفق: <b>{success}</b>\n"
-            f"❌ ناموفق: <b>{failed}</b>\n\n"
-            + "\n".join(results),
+            "\n".join(final_lines),
             reply_markup=auto_session_menu(),
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("[buyer] final send failed: %s", e)
 
 
 # ─── menu ──────────────────────────────────────────────────────────────────────────────────
@@ -372,8 +431,8 @@ async def autosess_count(msg: Message, state: FSMContext):
         old.cancel()
 
     status_msg = await msg.answer(
-        f"🚀 شروع خرید <b>{count}</b> سشن — ⚡ <b>{CONCURRENCY}</b> ورکر همزمان\n"
-        f"⏹ برای لغو: دکمه ‘⏹ لغو خرید’",
+        f"🚀 شروع خرید <b>{count}</b> سشن\n"
+        f"⚡ <b>{CONCURRENCY}</b> ورکر همزمان | ⏹ برای لغو: ‘⏹ لغو خرید’",
         parse_mode="HTML",
     )
 
