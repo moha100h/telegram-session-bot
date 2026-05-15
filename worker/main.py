@@ -41,12 +41,11 @@ PEER_FLOOD_COOLDOWN = 300
 ADD_DELAY_MIN = 15
 ADD_DELAY_MAX = 30
 
-# Warming config
 WARM_CHANNELS = [
     "@telegram", "@durov", "@TelegramTips",
     "@cryptocurrency", "@python", "@linux",
 ]
-WARM_ACTIONS_PER_DAY = [3, 5, 8, 12, 18, 25]  # day 1..6+
+WARM_ACTIONS_PER_DAY = [3, 5, 8, 12, 18, 25]
 WARM_DAYS_TO_FULL    = 6
 
 
@@ -55,7 +54,6 @@ WARM_DAYS_TO_FULL    = 6
 # ================================================================
 
 async def ping_proxy(host: str, port: int, timeout: float = 3.0) -> float:
-    """TCP ping. Returns latency ms or 9999 on fail."""
     try:
         t0 = time.monotonic()
         _, writer = await asyncio.wait_for(
@@ -73,19 +71,13 @@ async def ping_proxy(host: str, port: int, timeout: float = 3.0) -> float:
 
 
 async def get_best_proxy(redis: Redis, exclude_hosts: set = None, top_n: int = 20) -> dict | None:
-    """
-    Pick best proxy by TCP ping from random sample.
-    Avoids hosts already used (exclude_hosts) to ensure unique IPs per session.
-    """
     try:
         total = await redis.llen("tsb:proxies")
         if total == 0:
             return None
-
         sample_size = min(top_n * 3, total)
         indices = random.sample(range(total), sample_size)
         raws = await asyncio.gather(*[redis.lindex("tsb:proxies", i) for i in indices])
-
         candidates = []
         for raw in raws:
             if not raw:
@@ -97,9 +89,7 @@ async def get_best_proxy(redis: Redis, exclude_hosts: set = None, top_n: int = 2
                 candidates.append(p)
             except Exception:
                 pass
-
         if not candidates:
-            # fallback: ignore exclusion
             for raw in raws:
                 if not raw:
                     continue
@@ -107,22 +97,18 @@ async def get_best_proxy(redis: Redis, exclude_hosts: set = None, top_n: int = 2
                     candidates.append(json.loads(raw))
                 except Exception:
                     pass
-
         if not candidates:
             return None
-
         to_ping = candidates[:top_n]
         pings = await asyncio.gather(*[
             ping_proxy(p["host"], int(p["port"])) for p in to_ping
         ])
-
         best_proxy = None
         best_ping  = 9999.0
         for proxy, ping in zip(to_ping, pings):
             if ping < best_ping:
                 best_ping  = ping
                 best_proxy = proxy
-
         if best_proxy and best_ping < 5000:
             best_proxy["_ping_ms"] = best_ping
             return best_proxy
@@ -133,7 +119,6 @@ async def get_best_proxy(redis: Redis, exclude_hosts: set = None, top_n: int = 2
 
 
 async def get_proxy(redis: Redis) -> dict | None:
-    """Simple random proxy fallback."""
     try:
         total = await redis.llen("tsb:proxies")
         if not total:
@@ -183,9 +168,31 @@ def parse_target(target: str):
     return target
 
 
+# ================================================================
+# SQLITE FIX — WAL mode + busy_timeout
+# ================================================================
+
+def _patch_sqlite(client, timeout_ms: int = 10000):
+    """
+    Enable WAL journal mode and set busy_timeout on the SQLite session.
+    Prevents 'database is locked' when bot and worker access same .session file.
+    """
+    try:
+        session = client.session
+        if hasattr(session, "_conn") and session._conn:
+            session._conn.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+            session._conn.execute("PRAGMA journal_mode = WAL")
+    except Exception:
+        pass
+
+
 async def make_client(session_name: str, proxy: dict = None) -> TelegramClient:
     path = os.path.join(SESSIONS_DIR, session_name)
-    kwargs = {}
+    kwargs = {
+        "connection_retries": 3,
+        "retry_delay": 2,
+        "request_retries": 3,
+    }
     if proxy and proxy.get("type") in ("socks5", "socks4", "http"):
         try:
             kwargs["proxy"] = (proxy["type"], proxy["host"], int(proxy["port"]))
@@ -194,11 +201,21 @@ async def make_client(session_name: str, proxy: dict = None) -> TelegramClient:
     return TelegramClient(path, API_ID, API_HASH, **kwargs)
 
 
+# Per-session lock — prevents concurrent SQLite access ("database is locked")
+_session_locks: dict = {}
+
+def _get_session_lock(name: str) -> asyncio.Lock:
+    if name not in _session_locks:
+        _session_locks[name] = asyncio.Lock()
+    return _session_locks[name]
+
+
 async def connect_client(session_name: str, proxy: dict = None) -> TelegramClient | None:
     if proxy:
         try:
             client = await make_client(session_name, proxy)
             await asyncio.wait_for(client.connect(), timeout=10)
+            _patch_sqlite(client)
             if await client.is_user_authorized():
                 return client
             await client.disconnect()
@@ -211,6 +228,7 @@ async def connect_client(session_name: str, proxy: dict = None) -> TelegramClien
     try:
         client = await make_client(session_name, proxy=None)
         await asyncio.wait_for(client.connect(), timeout=15)
+        _patch_sqlite(client)
         if await client.is_user_authorized():
             return client
         await client.disconnect()
@@ -309,11 +327,6 @@ async def save_warm_state(redis: Redis, name: str, state: dict):
 
 
 async def warm_one_session(redis: Redis, name: str, proxy: dict | None):
-    """
-    Warm a single session: join channels, view posts, react.
-    Each session uses a unique proxy with best ping.
-    Updates warm state in Redis (warm:session:<name>).
-    """
     state = await get_warm_state(redis, name)
     day   = state.get("day", 0)
     idx   = min(day, len(WARM_ACTIONS_PER_DAY) - 1)
@@ -341,8 +354,6 @@ async def warm_one_session(redis: Redis, name: str, proxy: dict | None):
         for ch in channels:
             try:
                 entity = await client.get_entity(ch)
-
-                # Join
                 try:
                     await client(JoinChannelRequest(entity))
                     await asyncio.sleep(random.uniform(2, 5))
@@ -350,8 +361,6 @@ async def warm_one_session(redis: Redis, name: str, proxy: dict | None):
                     pass
                 except Exception:
                     pass
-
-                # View last 3 messages
                 msgs = await client.get_messages(entity, limit=3)
                 if msgs:
                     try:
@@ -363,8 +372,6 @@ async def warm_one_session(redis: Redis, name: str, proxy: dict | None):
                     except Exception:
                         pass
                     await asyncio.sleep(random.uniform(3, 8))
-
-                    # React to latest message
                     try:
                         react_emojis = ["\U0001f44d", "\u2764", "\U0001f525", "\U0001f44f"]
                         await client(SendReactionRequest(
@@ -374,47 +381,36 @@ async def warm_one_session(redis: Redis, name: str, proxy: dict | None):
                         ))
                     except Exception:
                         pass
-
                 actions_done += 1
                 await asyncio.sleep(random.uniform(5, 15))
-
             except FloodWaitError as e:
                 logger.warning("[warm] %s FloodWait %ds", name, e.seconds)
                 await asyncio.sleep(min(e.seconds, 60))
             except Exception as e:
                 logger.warning("[warm] %s action error: %s", name, e)
-
             if actions_done >= target_actions:
                 break
     finally:
         await safe_disconnect(client)
 
-    # Update state
     state["day"]           = day + 1
     state["total_actions"] = state.get("total_actions", 0) + actions_done
     state["last_active"]   = datetime.now(timezone.utc).isoformat()
     state["score"]         = min(20, state.get("score", 0) + actions_done)
     state["phase"]         = "warm" if state["day"] >= WARM_DAYS_TO_FULL else "warming"
-
     await save_warm_state(redis, name, state)
     logger.info("[warm] %s done: day=%d score=%d phase=%s",
                 name, state["day"], state["score"], state["phase"])
 
 
 async def run_warming(redis: Redis, sessions: list = None):
-    """
-    Warm all (or given) sessions.
-    Each session gets a UNIQUE proxy with best ping — no shared IPs.
-    """
     if sessions is None:
         sessions = get_session_files()
     if not sessions:
         logger.info("[warm] No sessions to warm")
         return
-
     logger.info("[warm] Starting warming cycle for %d sessions", len(sessions))
     used_hosts: set = set()
-
     for name in sessions:
         proxy = await get_best_proxy(redis, exclude_hosts=used_hosts, top_n=30)
         if proxy:
@@ -423,17 +419,14 @@ async def run_warming(redis: Redis, sessions: list = None):
                         name, proxy["host"], proxy["port"], proxy.get("_ping_ms", 0))
         else:
             logger.warning("[warm] %s no proxy available, using direct", name)
-
         await warm_one_session(redis, name, proxy)
         await asyncio.sleep(random.uniform(10, 30))
-
     logger.info("[warm] Warming cycle complete")
 
 
 async def auto_warmer(redis: Redis):
-    """Background task: warm all sessions every 24h automatically."""
-    logger.info("[auto_warmer] Started — first cycle in 60s")
-    await asyncio.sleep(60)  # initial delay after startup
+    logger.info("[auto_warmer] Started - first cycle in 60s")
+    await asyncio.sleep(60)
     while True:
         try:
             sessions = get_session_files()
@@ -475,7 +468,6 @@ async def run_join(task: dict, redis: Redis):
             entity = await client.get_entity(target)
             await client(JoinChannelRequest(entity))
             done += 1
-            logger.info("[join] %s -> %s OK", session_name, target)
         except UserAlreadyParticipantError:
             done += 1
         except FloodWaitError as e:
@@ -489,7 +481,6 @@ async def run_join(task: dict, redis: Redis):
         await update_task(tid, {"done": done, "failed": failed})
         await asyncio.sleep(random.uniform(2, 5))
     await update_task(tid, {"status": "completed", "done": done, "failed": failed})
-    logger.info("[join] DONE task=%s done=%d failed=%d", tid, done, failed)
 
 
 # ================================================================
@@ -505,12 +496,8 @@ async def run_group2group(task: dict, redis: Redis):
     await update_task(tid, {"status": "running"})
     done = failed = 0
     used_hosts: set = set()
-    logger.info("[g2g] task=%s %s->%s total=%d per=%d sessions=%d",
-                tid, source, dest, total, per_session, len(sessions))
-
-    all_members = []
     for session_name in sessions:
-        if all_members:
+        if all_members := []:
             break
         proxy = await get_best_proxy(redis, exclude_hosts=used_hosts)
         if proxy:
@@ -520,17 +507,20 @@ async def run_group2group(task: dict, redis: Redis):
             continue
         try:
             source_entity = await client.get_entity(source)
+            all_members = []
             async for user in client.iter_participants(source_entity, limit=total, aggressive=True):
                 if user.bot or user.deleted or user.access_hash is None:
                     continue
                 all_members.append(InputPeerUser(user.id, user.access_hash))
                 if len(all_members) >= total:
                     break
-            logger.info("[g2g] scraped %d members", len(all_members))
         except Exception as e:
-            logger.error("[g2g] scrape error: %s: %s", type(e).__name__, e)
+            logger.error("[g2g] scrape error: %s", e)
+            all_members = []
         finally:
             await safe_disconnect(client)
+        if all_members:
+            break
         await asyncio.sleep(1)
 
     if not all_members:
@@ -551,7 +541,6 @@ async def run_group2group(task: dict, redis: Redis):
             remaining = remaining[per_session:]
             await update_task(tid, {"done": done, "failed": failed})
             continue
-
         peer_flooded = False
         try:
             try:
@@ -561,11 +550,9 @@ async def run_group2group(task: dict, redis: Redis):
             except UserAlreadyParticipantError:
                 dest_entity = await client.get_entity(dest)
             except Exception as e:
-                logger.error("[g2g] %s join dest: %s: %s", session_name, type(e).__name__, e)
                 failed += len(batch)
                 remaining = remaining[per_session:]
                 continue
-
             processed = 0
             for input_user in batch:
                 if await is_cancelled(tid) or peer_flooded:
@@ -580,7 +567,6 @@ async def run_group2group(task: dict, redis: Redis):
                     done += 1
                     processed += 1
                 except PeerFloodError:
-                    logger.warning("[g2g] %s PeerFlood, switching session", session_name)
                     peer_flooded = True
                     failed += len(batch) - processed
                 except FloodWaitError as e:
@@ -590,10 +576,8 @@ async def run_group2group(task: dict, redis: Redis):
                     failed += 1
                     processed += 1
                 except Exception as e:
-                    logger.error("[g2g] add %s: %s: %s", input_user.user_id, type(e).__name__, e)
                     failed += 1
                     processed += 1
-
             remaining = remaining[processed:]
             try:
                 await client(LeaveChannelRequest(dest_entity))
@@ -602,9 +586,7 @@ async def run_group2group(task: dict, redis: Redis):
         finally:
             await safe_disconnect(client)
         await asyncio.sleep(random.uniform(5, 10))
-
     await update_task(tid, {"status": "completed", "done": done, "failed": failed})
-    logger.info("[g2g] DONE task=%s done=%d failed=%d", tid, done, failed)
 
 
 # ================================================================
@@ -638,7 +620,7 @@ async def run_view(task: dict, redis: Redis):
             await asyncio.sleep(min(e.seconds, 60))
             failed += 1
         except Exception as e:
-            logger.error("[view] %s: %s: %s", session_name, type(e).__name__, e)
+            logger.error("[view] %s: %s", session_name, e)
             failed += 1
         finally:
             await safe_disconnect(client)
@@ -682,7 +664,7 @@ async def run_reaction(task: dict, redis: Redis):
             await asyncio.sleep(min(e.seconds, 60))
             failed += 1
         except Exception as e:
-            logger.error("[reaction] %s: %s: %s", session_name, type(e).__name__, e)
+            logger.error("[reaction] %s: %s", session_name, e)
             failed += 1
         finally:
             await safe_disconnect(client)
@@ -720,7 +702,7 @@ async def run_leave(task: dict, redis: Redis):
             await asyncio.sleep(min(e.seconds, 60))
             failed += 1
         except Exception as e:
-            logger.error("[leave] %s: %s: %s", session_name, type(e).__name__, e)
+            logger.error("[leave] %s: %s", session_name, e)
             failed += 1
         finally:
             await safe_disconnect(client)
@@ -758,7 +740,7 @@ async def run_add_bot(task: dict, redis: Redis):
             await asyncio.sleep(min(e.seconds, 60))
             failed += 1
         except Exception as e:
-            logger.error("[add_bot] %s: %s: %s", session_name, type(e).__name__, e)
+            logger.error("[add_bot] %s: %s", session_name, e)
             failed += 1
         finally:
             await safe_disconnect(client)
@@ -808,7 +790,7 @@ async def run_report(task: dict, redis: Redis):
             await asyncio.sleep(min(e.seconds, 60))
             failed += 1
         except Exception as e:
-            logger.error("[report] %s: %s: %s", session_name, type(e).__name__, e)
+            logger.error("[report] %s: %s", session_name, e)
             failed += 1
         finally:
             await safe_disconnect(client)
@@ -818,7 +800,7 @@ async def run_report(task: dict, redis: Redis):
 
 
 # ================================================================
-# PROXY TEST TASK
+# PROXY TEST
 # ================================================================
 async def _test_proxies_task(redis: Redis):
     try:
@@ -834,11 +816,8 @@ async def _test_proxies_task(redis: Redis):
         alive = sum(1 for p in pings if p < 5000)
         avg   = round(sum(p for p in pings if p < 5000) / max(alive, 1), 1)
         logger.info("[proxy_test] alive=%d/%d avg_ping=%.1fms", alive, sample, avg)
-        # Store result in Redis for warmer_handler to read
         await redis.set("tsb:proxy_test_result", json.dumps({
-            "total": total,
-            "tested": sample,
-            "alive": alive,
+            "total": total, "tested": sample, "alive": alive,
             "avg_ping_ms": avg,
             "ts": datetime.now(timezone.utc).isoformat()
         }))
@@ -852,10 +831,7 @@ async def _test_proxies_task(redis: Redis):
 async def main():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     logger.info("Worker started | API_ID=%d | SESSIONS_DIR=%s", API_ID, SESSIONS_DIR)
-
-    # Start auto-warmer background task
     warmer_bg = asyncio.create_task(auto_warmer(redis))
-
     handlers = {
         "join":        run_join,
         "group2group": run_group2group,
@@ -865,7 +841,6 @@ async def main():
         "add_bot":     run_add_bot,
         "report":      run_report,
     }
-
     while True:
         try:
             item = await redis.blpop(TASK_QUEUE, timeout=5)
@@ -877,26 +852,19 @@ async def main():
             except Exception as e:
                 logger.error("JSON parse error: %s", e)
                 continue
-
             task_type = task.get("type")
-
-            # Warming tasks — run as background coroutine
             if task_type == "start_warming":
                 sessions = task.get("sessions") or get_session_files()
                 logger.info("[main] Manual warming for %d sessions", len(sessions))
                 asyncio.create_task(run_warming(redis, sessions))
                 continue
-
             if task_type == "test_proxies":
-                logger.info("[main] Proxy test triggered")
                 asyncio.create_task(_test_proxies_task(redis))
                 continue
-
             tid = task.get("id", "?")
             t   = await load_task(tid)
             if t and t.get("status") == "cancelled":
                 continue
-
             handler = handlers.get(task_type)
             if handler:
                 logger.info(">>> Starting task id=%s type=%s", tid, task_type)
@@ -907,7 +875,6 @@ async def main():
                     await update_task(tid, {"status": "failed", "error": str(e)})
             else:
                 logger.warning("Unknown task type: %s", task_type)
-
         except asyncio.CancelledError:
             warmer_bg.cancel()
             break

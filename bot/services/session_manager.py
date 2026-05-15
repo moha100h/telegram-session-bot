@@ -23,6 +23,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 _login_clients: dict = {}
 
 
+def _patch_sqlite(client, timeout_ms: int = 10000):
+    """WAL mode + busy_timeout to prevent 'database is locked' errors."""
+    try:
+        session = client.session
+        if hasattr(session, "_conn") and session._conn:
+            session._conn.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+            session._conn.execute("PRAGMA journal_mode = WAL")
+    except Exception:
+        pass
+
+
 def _load_sessions() -> dict:
     try:
         if os.path.exists(SESSIONS_FILE):
@@ -105,11 +116,13 @@ async def verify_session(name: str, proxy: dict = None) -> dict:
     """Actually connect and check if session is valid."""
     path = os.path.join(SESSIONS_DIR, name)
     try:
-        client = TelegramClient(path, API_ID, API_HASH, proxy=_get_proxy(proxy))
+        client = TelegramClient(path, API_ID, API_HASH,
+                                proxy=_get_proxy(proxy),
+                                connection_retries=3, retry_delay=2)
         await client.connect()
+        _patch_sqlite(client)
         if not await client.is_user_authorized():
             await client.disconnect()
-            # Mark as invalid
             data = _load_sessions()
             if name in data:
                 data[name]["verified"] = False
@@ -118,7 +131,6 @@ async def verify_session(name: str, proxy: dict = None) -> dict:
             return {"ok": False, "error": "unauthorized"}
         me = await client.get_me()
         await client.disconnect()
-        # Update meta
         data = _load_sessions()
         if name not in data:
             data[name] = {}
@@ -139,12 +151,11 @@ async def verify_session(name: str, proxy: dict = None) -> dict:
     except FloodWaitError as e:
         return {"ok": False, "error": f"FloodWait {e.seconds}s"}
     except Exception as e:
-        logger.error(f"[verify_session] {name}: {e}")
+        logger.error("[verify_session] %s: %s", name, e)
         return {"ok": False, "error": str(e)}
 
 
 async def verify_all_sessions() -> dict:
-    """Verify all sessions and return summary."""
     names = await get_session_names()
     results = {"ok": [], "fail": []}
     for name in names:
@@ -153,16 +164,18 @@ async def verify_all_sessions() -> dict:
             results["ok"].append(name)
         else:
             results["fail"].append({"name": name, "error": r.get("error")})
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
     return results
 
 
 async def leave_channel(name: str, channel: str, proxy: dict = None) -> dict:
-    """Leave a channel/group with a session."""
     path = os.path.join(SESSIONS_DIR, name)
     try:
-        client = TelegramClient(path, API_ID, API_HASH, proxy=_get_proxy(proxy))
+        client = TelegramClient(path, API_ID, API_HASH,
+                                proxy=_get_proxy(proxy),
+                                connection_retries=3, retry_delay=2)
         await client.connect()
+        _patch_sqlite(client)
         if not await client.is_user_authorized():
             await client.disconnect()
             return {"ok": False, "error": "unauthorized"}
@@ -171,7 +184,7 @@ async def leave_channel(name: str, channel: str, proxy: dict = None) -> dict:
         await client.disconnect()
         return {"ok": True}
     except Exception as e:
-        logger.error(f"[leave_channel] {name} -> {channel}: {e}")
+        logger.error("[leave_channel] %s -> %s: %s", name, channel, e)
         return {"ok": False, "error": str(e)}
 
 
@@ -187,20 +200,24 @@ async def add_session(redis: Redis, phone: str, step: str,
 
     if step == "send_code":
         try:
-            client = TelegramClient(session_path, API_ID, API_HASH)
+            client = TelegramClient(session_path, API_ID, API_HASH,
+                                    connection_retries=3, retry_delay=2)
             await client.connect()
+            _patch_sqlite(client)
             result = await client.send_code_request(phone)
             _login_clients[phone] = client
             return {"ok": True, "phone_code_hash": result.phone_code_hash}
         except Exception as e:
-            logger.error(f"[add_session] send_code {phone}: {e}")
+            logger.error("[add_session] send_code %s: %s", phone, e)
             return {"ok": False, "error": str(e)}
 
     elif step == "sign_in":
         client = _login_clients.get(phone)
         if client is None:
-            client = TelegramClient(session_path, API_ID, API_HASH)
+            client = TelegramClient(session_path, API_ID, API_HASH,
+                                    connection_retries=3, retry_delay=2)
             await client.connect()
+            _patch_sqlite(client)
             _login_clients[phone] = client
         try:
             await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
@@ -220,14 +237,16 @@ async def add_session(redis: Redis, phone: str, step: str,
         except SessionPasswordNeededError:
             return {"ok": False, "need_password": True}
         except Exception as e:
-            logger.error(f"[add_session] sign_in {phone}: {e}")
+            logger.error("[add_session] sign_in %s: %s", phone, e)
             return {"ok": False, "error": str(e)}
 
     elif step == "2fa":
         client = _login_clients.get(phone)
         if client is None:
-            client = TelegramClient(session_path, API_ID, API_HASH)
+            client = TelegramClient(session_path, API_ID, API_HASH,
+                                    connection_retries=3, retry_delay=2)
             await client.connect()
+            _patch_sqlite(client)
             _login_clients[phone] = client
         try:
             await client.sign_in(password=password)
@@ -245,7 +264,7 @@ async def add_session(redis: Redis, phone: str, step: str,
             _save_sessions(data)
             return {"ok": True}
         except Exception as e:
-            logger.error(f"[add_session] 2fa {phone}: {e}")
+            logger.error("[add_session] 2fa %s: %s", phone, e)
             return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": "unknown step"}
@@ -259,4 +278,4 @@ async def delete_session(name: str):
         path = os.path.join(SESSIONS_DIR, name + ext)
         if os.path.exists(path):
             os.remove(path)
-    logger.info(f"[delete_session] {name} removed")
+    logger.info("[delete_session] %s removed", name)
