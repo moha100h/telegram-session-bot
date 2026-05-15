@@ -1,8 +1,8 @@
-import glob
 import json
-import os
 import logging
+import os
 
+import redis.asyncio as aioredis
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -12,10 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 logger = logging.getLogger("warmer_handler")
 router = Router()
 
-
-class ProxyAddState(StatesGroup):
-    waiting_for_proxies = State()
-
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 PHASE_EMOJI = {
     "new": "🆕",
@@ -25,10 +22,14 @@ PHASE_EMOJI = {
 }
 
 
+class ProxyAddState(StatesGroup):
+    waiting_for_proxies = State()
+
+
 def warmer_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🌡 وضعیت گرم‌کردن", callback_data="warm_status"),
+            InlineKeyboardButton(text="🌡 وضعیت سشن‌ها", callback_data="warm_status"),
             InlineKeyboardButton(text="▶️ شروع دستی", callback_data="warm_start"),
         ],
         [
@@ -40,76 +41,108 @@ def warmer_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 آمار کامل", callback_data="warm_full_stats"),
         ],
         [
-            InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")
+            InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_main"),
         ]
     ])
 
 
+async def _get_redis() -> aioredis.Redis:
+    return aioredis.from_url(REDIS_URL, decode_responses=True)
+
+
+# --- Entry points ---
+
 @router.message(Command("warmer"))
 async def warmer_cmd(msg: Message):
     await msg.answer(
-        "🌡 **Session Warmer & Proxy Rotator**\n\n"
-        "مدیریت گرم‌کردن سشن‌ها و پروکسی‌های اختصاصی:",
+        "🔥 <b>Session Warmer & Proxy Rotator</b>\n\n"
+        "مدیریت گرم‌کردن سشن‌ها و پروکسی‌های سیستم:",
         reply_markup=warmer_menu(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
-@router.callback_query(F.data == "warm_status")
-async def warm_status(cb: CallbackQuery):
-    state_files = glob.glob("/app/sessions/.warm_*.json")
-
-    if not state_files:
-        await cb.message.edit_text(
-            "❌ هیچ سشنی در حال گرم‌کردن نیست.\n"
-            "ابتدا سشن اضافه کنید.",
-            reply_markup=warmer_menu()
-        )
-        return
-
-    text = "🌡 **وضعیت گرم‌کردن سشن‌ها:**\n\n"
-    for sf in sorted(state_files):
-        name = os.path.basename(sf).replace(".warm_", "").replace(".json", "")
-        try:
-            with open(sf) as f:
-                state = json.load(f)
-            emoji = PHASE_EMOJI.get(state["phase"], "❓")
-            last = state.get("last_active", "نامشخص")
-            if last and len(last) > 16:
-                last = last[:16]
-            text += (
-                f"{emoji} `{name}`\n"
-                f"   فاز: **{state['phase']}** | روز: {state['day']}\n"
-                f"   امتیاز: {state['score']}/20 | اکشن: {state['total_actions']}\n"
-                f"   آخرین فعالیت: {last}\n\n"
-            )
-        except Exception as e:
-            text += f"❓ `{name}` - خطا در خواندن\n\n"
-
-    await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="Markdown")
+@router.callback_query(F.data == "menu_warmer")
+async def menu_warmer(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "🔥 <b>Session Warmer & Proxy Rotator</b>\n\n"
+        "مدیریت گرم‌کردن سشن‌ها و پروکسی‌های سیستم:",
+        reply_markup=warmer_menu(),
+        parse_mode="HTML"
+    )
     await cb.answer()
 
 
+# --- Warm Status - reads from Redis ---
+
+@router.callback_query(F.data == "warm_status")
+async def warm_status(cb: CallbackQuery):
+    r = await _get_redis()
+    try:
+        keys = await r.keys("warm:session:*")
+        if not keys:
+            await cb.message.edit_text(
+                "❌ هیچ سشنی در حال گرم‌کردن نیست.\n"
+                "ابتدا سشن اضافه کنید.",
+                reply_markup=warmer_menu()
+            )
+            await cb.answer()
+            return
+
+        text = "🌡 <b>وضعیت گرم‌کردن سشن‌ها:</b>\n\n"
+        for key in sorted(keys):
+            name = key.replace("warm:session:", "")
+            try:
+                raw = await r.get(key)
+                state = json.loads(raw)
+                emoji = PHASE_EMOJI.get(state.get("phase", "new"), "❓")
+                last = state.get("last_active", "نامشخص")
+                if last and len(str(last)) > 16:
+                    last = str(last)[:16]
+                text += (
+                    f"{emoji} <code>{name}</code>\n"
+                    f"   فاز: <b>{state.get('phase','?')}</b> | روز: {state.get('day','?')}\n"
+                    f"   امتیاز: {state.get('score',0)}/20 | اکشن: {state.get('total_actions',0)}\n"
+                    f"   آخرین فعالیت: {last}\n\n"
+                )
+            except Exception:
+                text += f"❓ <code>{name}</code> - خطا در خواندن\n\n"
+
+        await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="HTML")
+    finally:
+        await r.aclose()
+    await cb.answer()
+
+
+# --- Warm Start ---
+
 @router.callback_query(F.data == "warm_start")
 async def warm_start(cb: CallbackQuery):
-    await cb.answer("در حال شروع گرم‌کردن... این فرآیند در پس‌زمینه اجرا می‌شود.", show_alert=True)
+    r = await _get_redis()
+    try:
+        await r.lpush("tasks", json.dumps({"type": "start_warming"}))
+    finally:
+        await r.aclose()
+    await cb.answer("✅ دستور شروع گرم‌کردن ارسال شد!", show_alert=True)
 
+
+# --- Proxy Status - reads from Redis ---
 
 @router.callback_query(F.data == "proxy_status")
 async def proxy_status(cb: CallbackQuery):
-    proxy_file = "/app/data/proxies.json"
-    if not os.path.exists(proxy_file):
-        await cb.message.edit_text(
-            "❌ هیچ پروکسی‌ای ثبت نشده.\n"
-            "از دکمه ➕ افزودن پروکسی استفاده کنید.",
-            reply_markup=warmer_menu()
-        )
-        await cb.answer()
-        return
-
+    r = await _get_redis()
     try:
-        with open(proxy_file) as f:
-            proxies = json.load(f)
+        raw = await r.get("proxies:list")
+        if not raw:
+            await cb.message.edit_text(
+                "❌ هیچ پروکسی‌ای ثبت نشده.\n"
+                "از دکمه ➕ افزودن پروکسی استفاده کنید.",
+                reply_markup=warmer_menu()
+            )
+            await cb.answer()
+            return
+
+        proxies = json.loads(raw)
         total = len(proxies)
         alive = sum(1 for p in proxies if p.get("is_alive"))
         dead = total - alive
@@ -117,30 +150,28 @@ async def proxy_status(cb: CallbackQuery):
         avg_lat = sum(latencies) // len(latencies) if latencies else 0
 
         text = (
-            "🔄 **وضعیت پروکسی‌ها:**\n\n"
-            f"📊 کل: `{total}`\n"
-            f"✅ زنده: `{alive}`\n"
-            f"❌ مرده: `{dead}`\n"
-            f"⚡ میانگین latency: `{avg_lat}ms`\n"
+            "🔄 <b>وضعیت پروکسی‌ها:</b>\n\n"
+            f"📊 کل: <code>{total}</code>\n"
+            f"✅ زنده: <code>{alive}</code>\n"
+            f"❌ مرده: <code>{dead}</code>\n"
+            f"⚡ میانگین latency: <code>{avg_lat}ms</code>\n"
         )
     except Exception as e:
         text = f"❌ خطا در خواندن پروکسی‌ها: {e}"
+    finally:
+        await r.aclose()
 
-    await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="Markdown")
+    await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="HTML")
     await cb.answer()
 
+
+# --- Proxy Test ---
 
 @router.callback_query(F.data == "proxy_test")
 async def proxy_test(cb: CallbackQuery):
-    await cb.message.edit_text("🧪 در حال تست پروکسی‌ها... ⏳\nممکن است چند دقیقه طول بکشد.")
-    await cb.answer()
-    # تست واقعی توسط worker انجام میشه
-    # اینجا فقط trigger میفرستیم
-    import redis.asyncio as aioredis
+    r = await _get_redis()
     try:
-        r = aioredis.from_url("redis://redis:6379")
         await r.lpush("tasks", json.dumps({"type": "test_proxies"}))
-        await r.aclose()
         await cb.message.edit_text(
             "✅ دستور تست پروکسی‌ها ارسال شد!\n"
             "نتیجه چند دقیقه دیگر در لاگ‌ها قابل مشاهده است.",
@@ -151,20 +182,25 @@ async def proxy_test(cb: CallbackQuery):
             f"❌ خطا در ارسال دستور: {e}",
             reply_markup=warmer_menu()
         )
+    finally:
+        await r.aclose()
+    await cb.answer()
 
+
+# --- Proxy Add ---
 
 @router.callback_query(F.data == "proxy_add")
 async def proxy_add(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
-        "➕ **افزودن پروکسی**\n\n"
+        "➕ <b>افزودن پروکسی</b>\n\n"
         "پروکسی‌ها رو بفرست (هر خط یکی):\n\n"
         "فرمت‌های قابل قبول:\n"
-        "`socks5://user:pass@host:port`\n"
-        "`socks5://host:port`\n"
-        "`host:port:socks5`\n"
-        "`host:port`\n\n"
+        "<code>socks5://user:pass@host:port</code>\n"
+        "<code>socks5://host:port</code>\n"
+        "<code>host:port:socks5</code>\n"
+        "<code>host:port</code>\n\n"
         "بعد از ارسال، خودکار تست میشن ✅",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await state.set_state(ProxyAddState.waiting_for_proxies)
     await cb.answer()
@@ -179,86 +215,92 @@ async def receive_proxies(msg: Message, state: FSMContext):
         await msg.answer("❌ هیچ پروکسی‌ای دریافت نشد.", reply_markup=warmer_menu())
         return
 
-    # ذخیره پروکسی‌ها
-    proxy_file = "/app/data/proxies.json"
-    os.makedirs("/app/data", exist_ok=True)
+    r = await _get_redis()
+    try:
+        raw = await r.get("proxies:list")
+        existing = json.loads(raw) if raw else []
 
-    existing = []
-    if os.path.exists(proxy_file):
-        with open(proxy_file) as f:
-            existing = json.load(f)
+        added = 0
+        for line in lines:
+            parsed = _parse_proxy_line(line)
+            if parsed:
+                if not any(p["host"] == parsed["host"] and p["port"] == parsed["port"] for p in existing):
+                    existing.append(parsed)
+                    added += 1
 
-    added = 0
-    for line in lines:
-        parsed = _parse_proxy_line(line)
-        if parsed:
-            # چک تکراری نبودن
-            if not any(p["host"] == parsed["host"] and p["port"] == parsed["port"] for p in existing):
-                existing.append(parsed)
-                added += 1
-
-    with open(proxy_file, "w") as f:
-        json.dump(existing, f, indent=2)
+        await r.set("proxies:list", json.dumps(existing))
+        await r.lpush("tasks", json.dumps({"type": "test_proxies"}))
+    finally:
+        await r.aclose()
 
     await msg.answer(
-        f"✅ **{added}** پروکسی جدید اضافه شد!\n"
+        f"✅ <b>{added}</b> پروکسی جدید اضافه شد!\n"
         f"کل پروکسی‌ها: {len(existing)}\n\n"
         "برای تست از دکمه 🧪 استفاده کنید.",
         reply_markup=warmer_menu(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
+
+# --- Full Stats - reads sessions + proxies from Redis ---
 
 @router.callback_query(F.data == "warm_full_stats")
 async def warm_full_stats(cb: CallbackQuery):
-    state_files = glob.glob("/app/sessions/.warm_*.json")
-    proxy_file = "/app/data/proxies.json"
+    r = await _get_redis()
+    try:
+        keys = await r.keys("warm:session:*")
+        total_sessions = len(keys)
+        warm_count = warming_count = total_actions = 0
+        for key in keys:
+            try:
+                raw = await r.get(key)
+                s = json.loads(raw)
+                phase = s.get("phase", "new")
+                if phase in ("warm", "active"):
+                    warm_count += 1
+                elif phase == "warming":
+                    warming_count += 1
+                total_actions += s.get("total_actions", 0)
+            except Exception:
+                pass
 
-    total_sessions = len(state_files)
-    warm_count = 0
-    warming_count = 0
-    total_actions = 0
+        proxy_total = proxy_alive = 0
+        raw_p = await r.get("proxies:list")
+        if raw_p:
+            try:
+                proxies = json.loads(raw_p)
+                proxy_total = len(proxies)
+                proxy_alive = sum(1 for p in proxies if p.get("is_alive"))
+            except Exception:
+                pass
 
-    for sf in state_files:
-        try:
-            with open(sf) as f:
-                s = json.load(f)
-            if s["phase"] in ("warm", "active"):
-                warm_count += 1
-            elif s["phase"] == "warming":
-                warming_count += 1
-            total_actions += s.get("total_actions", 0)
-        except Exception:
-            pass
+        session_keys = await r.keys("session:*")
+        total_system_sessions = len(session_keys)
 
-    proxy_total = 0
-    proxy_alive = 0
-    if os.path.exists(proxy_file):
-        try:
-            with open(proxy_file) as f:
-                proxies = json.load(f)
-            proxy_total = len(proxies)
-            proxy_alive = sum(1 for p in proxies if p.get("is_alive"))
-        except Exception:
-            pass
+    finally:
+        await r.aclose()
 
     text = (
-        "📊 **آمار کامل سیستم:**\n\n"
-        "🌡 **Session Warmer:**\n"
-        f"   کل سشن‌ها: `{total_sessions}`\n"
-        f"   ✅ گرم شده: `{warm_count}`\n"
-        f"   🔥 در حال گرم‌کردن: `{warming_count}`\n"
-        f"   🆕 جدید: `{total_sessions - warm_count - warming_count}`\n"
-        f"   کل اکشن‌ها: `{total_actions}`\n\n"
-        "🔄 **Proxy Rotator:**\n"
-        f"   کل پروکسی‌ها: `{proxy_total}`\n"
-        f"   ✅ زنده: `{proxy_alive}`\n"
-        f"   ❌ مرده: `{proxy_total - proxy_alive}`\n"
+        "📊 <b>آمار کامل سیستم:</b>\n\n"
+        "📱 <b>سشن‌های سیستم:</b>\n"
+        f"   کل: <code>{total_system_sessions}</code>\n\n"
+        "🌡 <b>Session Warmer:</b>\n"
+        f"   کل: <code>{total_sessions}</code>\n"
+        f"   ✅ گرم شده: <code>{warm_count}</code>\n"
+        f"   🔥 در حال گرم‌کردن: <code>{warming_count}</code>\n"
+        f"   🆕 جدید: <code>{total_sessions - warm_count - warming_count}</code>\n"
+        f"   کل اکشن‌ها: <code>{total_actions}</code>\n\n"
+        "🔄 <b>Proxy Rotator:</b>\n"
+        f"   کل: <code>{proxy_total}</code>\n"
+        f"   ✅ زنده: <code>{proxy_alive}</code>\n"
+        f"   ❌ مرده: <code>{proxy_total - proxy_alive}</code>\n"
     )
 
-    await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="Markdown")
+    await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="HTML")
     await cb.answer()
 
+
+# --- Helper ---
 
 def _parse_proxy_line(raw: str) -> dict | None:
     try:

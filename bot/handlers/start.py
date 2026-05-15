@@ -26,6 +26,9 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🌐 پروکسی", callback_data="menu_proxy"),
             InlineKeyboardButton(text="📞 شماره مجازی", callback_data="menu_virtual"),
         ],
+        [
+            InlineKeyboardButton(text="🔥 Warmer", callback_data="menu_warmer"),
+        ],
     ])
 
 
