@@ -54,7 +54,6 @@ async def _get_redis() -> aioredis.Redis:
 
 
 def _load_sessions_file() -> dict:
-    """Read sessions.json from disk (same source as session_manager)"""
     try:
         if os.path.exists(SESSIONS_FILE):
             with open(SESSIONS_FILE, "r") as f:
@@ -65,7 +64,6 @@ def _load_sessions_file() -> dict:
 
 
 def _get_session_files() -> list:
-    """List .session files on disk"""
     names = []
     if os.path.exists(SESSIONS_DIR):
         for fn in os.listdir(SESSIONS_DIR):
@@ -74,7 +72,7 @@ def _get_session_files() -> list:
     return sorted(names)
 
 
-# ─── Entry points ─────────────────────────────────────────────────────────────
+# --- Entry points ---
 
 @router.message(Command("warmer"))
 async def warmer_cmd(msg: Message):
@@ -97,7 +95,7 @@ async def menu_warmer(cb: CallbackQuery):
     await cb.answer()
 
 
-# ─── Warm Status — reads from sessions.json + .session files ──────────────────
+# --- Warm Status ---
 
 @router.callback_query(F.data == "warm_status")
 async def warm_status(cb: CallbackQuery):
@@ -113,39 +111,38 @@ async def warm_status(cb: CallbackQuery):
         await cb.answer()
         return
 
-    # Read warm states from Redis (warm:session:<name>)
     r = await _get_redis()
     try:
         text = "🌡 <b>وضعیت سشن‌ها:</b>\n\n"
         for name in session_files:
-            meta = sessions_meta.get(name, {})
+            meta     = sessions_meta.get(name, {})
             phone    = meta.get("phone", "+" + name)
             fullname = meta.get("fullname", "").strip()
             verified = meta.get("verified", False)
 
-            # warm state from Redis if exists
-            warm_raw = await r.get(f"warm:session:{name}")
+            warm_raw = await r.get("warm:session:" + name)
             if warm_raw:
                 try:
-                    ws = json.loads(warm_raw)
+                    ws   = json.loads(warm_raw)
                     emoji = PHASE_EMOJI.get(ws.get("phase", "new"), "❓")
                     last  = str(ws.get("last_active", "نامشخص"))[:16]
+                    fname_part = (" (" + fullname + ")") if fullname else ""
                     text += (
-                        f"{emoji} <code>{phone}</code>"
-                        + (f" ({fullname})" if fullname else "") + "\n"
-                        f"   فاز: <b>{ws.get('phase','?')}</b> | "
-                        f"روز: {ws.get('day','?')} | "
-                        f"امتیاز: {ws.get('score',0)}/20\n"
-                        f"   آخرین فعالیت: {last}\n\n"
+                        emoji + " <code>" + phone + "</code>" + fname_part + "\n"
+                        "   فاز: <b>" + ws.get("phase", "?") + "</b> | "
+                        "روز: " + str(ws.get("day", "?")) + " | "
+                        "امتیاز: " + str(ws.get("score", 0)) + "/20\n"
+                        "   آخرین فعالیت: " + last + "\n\n"
                     )
                 except Exception:
-                    text += f"❓ <code>{phone}</code> - خطا در خواندن\n\n"
+                    text += "❓ <code>" + phone + "</code> - خطا در خواندن\n\n"
             else:
-                icon = "✅" if verified else "🆕"
+                icon     = "✅" if verified else "🆕"
+                v_icon   = "✅" if verified else "❌"
+                fname_part = (" (" + fullname + ")") if fullname else ""
                 text += (
-                    f"{icon} <code>{phone}</code>"
-                    + (f" ({fullname})" if fullname else "") + "\n"
-                    f"   فاز: جدید (گرم نشده) | تایید: {'\u2705' if verified else '\u274c'}\n\n"
+                    icon + " <code>" + phone + "</code>" + fname_part + "\n"
+                    "   فاز: جدید (گرم نشده) | تایید: " + v_icon + "\n\n"
                 )
     finally:
         await r.aclose()
@@ -154,7 +151,7 @@ async def warm_status(cb: CallbackQuery):
     await cb.answer()
 
 
-# ─── Warm Start ───────────────────────────────────────────────────────────────
+# --- Warm Start ---
 
 @router.callback_query(F.data == "warm_start")
 async def warm_start(cb: CallbackQuery):
@@ -166,7 +163,7 @@ async def warm_start(cb: CallbackQuery):
     await cb.answer("✅ دستور شروع گرم‌کردن ارسال شد!", show_alert=True)
 
 
-# ─── Proxy Status — reads from tsb:proxies (Redis list) ───────────────────────
+# --- Proxy Status ---
 
 @router.callback_query(F.data == "proxy_status")
 async def proxy_status(cb: CallbackQuery):
@@ -182,7 +179,6 @@ async def proxy_status(cb: CallbackQuery):
             await cb.answer()
             return
 
-        # Sample first 5 to show types
         samples = []
         for i in range(min(5, total)):
             raw = await r.lindex("tsb:proxies", i)
@@ -195,18 +191,18 @@ async def proxy_status(cb: CallbackQuery):
         for s in samples:
             t = s.get("type", "unknown")
             types_count[t] = types_count.get(t, 0) + 1
+        types_str = ", ".join(t + ": " + str(c) for t, c in types_count.items())
 
-        types_str = ", ".join(f"{t}: {c}" for t, c in types_count.items())
-
+        first = samples[0] if samples else {}
         text = (
             "🔄 <b>وضعیت پروکسی‌ها:</b>\n\n"
-            f"📊 کل پروکسی: <code>{total}</code>\n"
-            f"🔍 نمونه اول: <code>{samples[0].get('host','?')}:{samples[0].get('port','?')}</code>\n"
-            f"🏷 نوع: <code>{types_str}</code>\n\n"
-            f"⏰ آپدیت خودکار توسط proxy_fetcher هر ساعت"
+            "📊 کل پروکسی: <code>" + str(total) + "</code>\n"
+            "🔍 نمونه اول: <code>" + str(first.get("host", "?")) + ":" + str(first.get("port", "?")) + "</code>\n"
+            "🏷 نوع: <code>" + types_str + "</code>\n\n"
+            "⏰ آپدیت خودکار توسط proxy_fetcher هر ساعت"
         )
     except Exception as e:
-        text = f"❌ خطا: {e}"
+        text = "❌ خطا: " + str(e)
     finally:
         await r.aclose()
 
@@ -214,7 +210,7 @@ async def proxy_status(cb: CallbackQuery):
     await cb.answer()
 
 
-# ─── Proxy Test ───────────────────────────────────────────────────────────────
+# --- Proxy Test ---
 
 @router.callback_query(F.data == "proxy_test")
 async def proxy_test(cb: CallbackQuery):
@@ -227,13 +223,13 @@ async def proxy_test(cb: CallbackQuery):
             reply_markup=warmer_menu(),
         )
     except Exception as e:
-        await cb.message.edit_text(f"❌ خطا: {e}", reply_markup=warmer_menu())
+        await cb.message.edit_text("❌ خطا: " + str(e), reply_markup=warmer_menu())
     finally:
         await r.aclose()
     await cb.answer()
 
 
-# ─── Proxy Add — appends to tsb:proxies list ──────────────────────────────────
+# --- Proxy Add ---
 
 @router.callback_query(F.data == "proxy_add")
 async def proxy_add(cb: CallbackQuery, state: FSMContext):
@@ -274,32 +270,30 @@ async def receive_proxies(msg: Message, state: FSMContext):
         await r.aclose()
 
     await msg.answer(
-        f"✅ <b>{added}</b> پروکسی جدید به لیست اضافه شد!\n"
-        f"کل پروکسی‌ها: <code>{total}</code>",
+        "✅ <b>" + str(added) + "</b> پروکسی جدید به لیست اضافه شد!\n"
+        "کل پروکسی‌ها: <code>" + str(total) + "</code>",
         reply_markup=warmer_menu(),
         parse_mode="HTML",
     )
 
 
-# ─── Full Stats ────────────────────────────────────────────────────────────────
+# --- Full Stats ---
 
 @router.callback_query(F.data == "warm_full_stats")
 async def warm_full_stats(cb: CallbackQuery):
-    # Sessions from file
     session_files  = _get_session_files()
     sessions_meta  = _load_sessions_file()
     total_sessions = len(session_files)
     verified_count = sum(1 for n in session_files if sessions_meta.get(n, {}).get("verified"))
 
-    # Warm states from Redis
     r = await _get_redis()
     try:
         warm_count = warming_count = total_actions = 0
         for name in session_files:
-            raw = await r.get(f"warm:session:{name}")
+            raw = await r.get("warm:session:" + name)
             if raw:
                 try:
-                    s = json.loads(raw)
+                    s     = json.loads(raw)
                     phase = s.get("phase", "new")
                     if phase in ("warm", "active"):
                         warm_count += 1
@@ -313,27 +307,30 @@ async def warm_full_stats(cb: CallbackQuery):
     finally:
         await r.aclose()
 
+    not_verified = total_sessions - verified_count
+    not_warmed   = total_sessions - warm_count - warming_count
+
     text = (
         "📊 <b>آمار کامل سیستم:</b>\n\n"
         "📱 <b>سشن‌های سیستم:</b>\n"
-        f"   کل: <code>{total_sessions}</code>\n"
-        f"   ✅ تایید شده: <code>{verified_count}</code>\n"
-        f"   ❌ تایید نشده: <code>{total_sessions - verified_count}</code>\n\n"
+        "   کل: <code>" + str(total_sessions) + "</code>\n"
+        "   ✅ تایید شده: <code>" + str(verified_count) + "</code>\n"
+        "   ❌ تایید نشده: <code>" + str(not_verified) + "</code>\n\n"
         "🌡 <b>Session Warmer:</b>\n"
-        f"   ✅ گرم شده: <code>{warm_count}</code>\n"
-        f"   🔥 در حال گرم‌کردن: <code>{warming_count}</code>\n"
-        f"   🆕 جدید (گرم نشده): <code>{total_sessions - warm_count - warming_count}</code>\n"
-        f"   کل اکشن‌ها: <code>{total_actions}</code>\n\n"
+        "   ✅ گرم شده: <code>" + str(warm_count) + "</code>\n"
+        "   🔥 در حال گرم‌کردن: <code>" + str(warming_count) + "</code>\n"
+        "   🆕 جدید: <code>" + str(not_warmed) + "</code>\n"
+        "   کل اکشن‌ها: <code>" + str(total_actions) + "</code>\n\n"
         "🔄 <b>Proxy Rotator:</b>\n"
-        f"   کل پروکسی: <code>{proxy_total}</code>\n"
-        f"   ⏰ آپدیت خودکار هر ساعت توسط proxy_fetcher"
+        "   کل پروکسی: <code>" + str(proxy_total) + "</code>\n"
+        "   ⏰ آپدیت خودکار هر ساعت توسط proxy_fetcher"
     )
 
     await cb.message.edit_text(text, reply_markup=warmer_menu(), parse_mode="HTML")
     await cb.answer()
 
 
-# ─── Helper ────────────────────────────────────────────────────────────────────
+# --- Helper ---
 
 def _parse_proxy_line(raw: str) -> dict | None:
     try:
