@@ -1,5 +1,5 @@
 """
-User service - registration, balance, verification.
+User service - registration, balance, verification, admin management.
 """
 import os
 import random
@@ -29,18 +29,17 @@ async def get_or_create_user(session: AsyncSession, tg_user) -> User:
     return user
 
 
-async def get_user(session: AsyncSession, telegram_id: int) -> "User | None":
+async def get_user(session: AsyncSession, telegram_id: int):
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     return result.scalar_one_or_none()
 
 
-async def get_user_by_id(session: AsyncSession, user_id: int) -> "User | None":
+async def get_user_by_id(session: AsyncSession, user_id: int):
     result = await session.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()
 
 
 async def set_phone(session: AsyncSession, telegram_id: int, phone: str):
-    """Save verified phone number for user."""
     await session.execute(
         update(User)
         .where(User.telegram_id == telegram_id)
@@ -104,7 +103,7 @@ async def set_setting(session: AsyncSession, key: str, value: str):
     await session.commit()
 
 
-async def get_admin(session: AsyncSession, telegram_id: int) -> "AdminUser | None":
+async def get_admin(session: AsyncSession, telegram_id: int):
     result = await session.execute(
         select(AdminUser).where(AdminUser.telegram_id == telegram_id)
     )
@@ -112,8 +111,44 @@ async def get_admin(session: AsyncSession, telegram_id: int) -> "AdminUser | Non
 
 
 async def is_admin(session: AsyncSession, telegram_id: int) -> bool:
-    admin = await get_admin(session, telegram_id)
-    return admin is not None
+    return (await get_admin(session, telegram_id)) is not None
+
+
+async def get_all_admins(session: AsyncSession) -> list:
+    result = await session.execute(select(AdminUser).order_by(AdminUser.created_at.desc()))
+    return result.scalars().all()
+
+
+async def add_admin(session: AsyncSession, telegram_id: int, username: str = None, role: str = "admin") -> AdminUser:
+    existing = await get_admin(session, telegram_id)
+    if existing:
+        existing.role = role
+        if username:
+            existing.username = username
+        await session.commit()
+        return existing
+    admin = AdminUser(
+        telegram_id=telegram_id,
+        username=username,
+        role=role,
+        permissions="{}",
+    )
+    session.add(admin)
+    await session.commit()
+    await session.refresh(admin)
+    return admin
+
+
+async def remove_admin(session: AsyncSession, telegram_id: int) -> bool:
+    result = await session.execute(
+        select(AdminUser).where(AdminUser.telegram_id == telegram_id)
+    )
+    admin = result.scalar_one_or_none()
+    if admin:
+        await session.delete(admin)
+        await session.commit()
+        return True
+    return False
 
 
 async def create_verification_code(session: AsyncSession, telegram_id: int) -> str:
