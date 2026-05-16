@@ -1,136 +1,107 @@
-# 🤖 Telegram Session Bot
+# 🚀 Telegram SMM Panel Bot
 
-سیستم پیشرفته مدیریت سشن تلگرام — فقط بات ادمین، بدون پنل وب.
-
-## ✨ امکانات
-
-- 📱 **مدیریت سشن** — آپلود، بررسی، حذف سشن‌های `.session`
-- 📲 **شماره مجازی** — دریافت کد تلگرام و ذخیره سشن مستقیم از بات
-- 🤖 **پروفایل خودکار** — نام، نام‌خانوادگی، بیو، یوزرنیم، عکس پروفایل رندوم
-- 📥 **تسک عضویت** — عضویت انبوه در کانال/گروه
-- 🔄 **گروه به گروه** — انتقال اعضا از گروه مبدأ به مقصد (هر سشن ۱۰-۵۰ نفر)
-- 👁 **ویو پست** — افزایش بازدید پست کانال
-- 👍 **ری‌اکشن** — ری‌اکشن انبوه روی پست
-- 🌐 **پروکسی خودکار** — دریافت و بروزرسانی خودکار پروکسی از اینترنت
-- 📊 **آمار کامل** — آمار سشن‌ها، تسک‌ها، پروکسی‌ها
-- 🗄 **بکاپ خودکار** — هر ۱ ساعت بکاپ به ادمین ارسال می‌شود
-- 📥 **بازگردانی بکاپ** — آپلود فایل zip و بازگردانی خودکار
+A professional Telegram bot for SMM (Social Media Marketing) services powered by [SMMPass](https://smmpass.com).
 
 ---
 
-## 🚀 نصب روی سرور لینوکس (Ubuntu 22.04)
+## ✨ Features
 
-### ۱. نصب Docker
+### 👤 User Panel
+| Feature | Description |
+|---|---|
+| 🛒 SMM Orders | Browse categories with pagination, view **raw API prices** (no hidden markup) |
+| 💰 Wallet | Deposit via USDT/TON/TRX, view transaction history |
+| 📦 My Orders | Track all orders with live status icons |
+| 🔍 Order Status | Check any order by API ID |
+| 👤 Profile | Balance, referral stats, phone verification |
+| 📞 Support | Configurable support link |
+
+### 🔧 Admin Panel
+| Feature | Description |
+|---|---|
+| 💳 Deposits | Approve/reject with **instant user notification** |
+| 👥 Users | Search, view details, ban/unban, manual credit |
+| 📦 Orders | View all orders with status |
+| 🚀 SMMPass | API balance, categories with profit margins, cache refresh |
+| ⚙️ Settings | Bot name, welcome message, wallet addresses, **SMM button name**, profit % |
+| 📢 Broadcast | Send message to all users |
+| 📊 Stats | Users, orders, revenue overview |
+
+---
+
+## 🛠 Tech Stack
+
+- **Python 3.11** + **aiogram 3.x**
+- **PostgreSQL** + SQLAlchemy async
+- **Redis** (FSM storage)
+- **Docker Compose**
+- **SMMPass API** (httpx async client)
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-curl -fsSL https://get.docker.com | sh
-systemctl enable docker
-systemctl start docker
-```
-
-### ۲. دانلود پروژه
-
-```bash
-apt install git -y
-git clone https://github.com/moha100h/telegram-session-bot.git
+git clone https://github.com/moha100h/telegram-session-bot
 cd telegram-session-bot
-```
-
-### ۳. ساخت فایل .env
-
-```bash
 cp .env.example .env
-nano .env
-```
-
-مقادیر زیر را پر کنید:
-
-```env
-BOT_TOKEN=توکن_بات_از_BotFather
-ADMIN_IDS=آیدی_عددی_ادمین
-API_ID=آیدی_از_my.telegram.org
-API_HASH=هش_از_my.telegram.org
-```
-
-### ۴. ساخت پوشه‌های لازم
-
-```bash
-mkdir -p sessions backups data
-```
-
-### ۵. اجرا
-
-```bash
+# Edit .env with your values
 docker compose up -d --build
 ```
 
-### ۶. بررسی وضعیت
+---
 
-```bash
-docker compose ps
-docker compose logs -f bot
+## ⚙️ Environment Variables
+
+```env
+BOT_TOKEN=your_bot_token
+ADMIN_ID=your_telegram_id
+SMMPASS_KEY=your_smmpass_api_key
+DATABASE_URL=postgresql+asyncpg://smm:smm123@postgres:5432/smmbot
+REDIS_URL=redis://redis:6379/0
 ```
 
 ---
 
-## 📋 دستورات مفید
+## 📁 Project Structure
 
-```bash
-# مشاهده لاگ بات
-docker compose logs -f bot
-
-# مشاهده لاگ worker
-docker compose logs -f worker
-
-# ری‌استارت
-docker compose restart
-
-# آپدیت از GitHub
-git pull && docker compose up -d --build
-
-# توقف
-docker compose down
+```
+bot/
+├── handlers/
+│   ├── admin_handler.py      # Full admin panel (deposits, users, settings, SMMPass)
+│   ├── user_handler.py       # User panel (wallet, deposit, orders, support)
+│   └── smmpass_handler.py    # SMM ordering flow (categories → service → confirm → pay)
+├── services/
+│   ├── smmpass.py            # SMMPass API client (raw prices, 1h cache)
+│   ├── deposit_service.py    # Deposit management (create, approve, reject)
+│   ├── order_service.py      # Order management
+│   ├── user_service.py       # User management (balance, ban, admin check)
+│   └── settings_service.py   # Bot settings (get/set AdminSetting)
+├── db/
+│   ├── models.py             # SQLAlchemy models
+│   └── database.py           # Async DB connection
+└── middlewares/
+    └── auth_middleware.py    # Auto-register users + ban check
 ```
 
 ---
 
-## 📱 راهنمای استفاده
+## 💡 Key Design Decisions
 
-۱. بات را در تلگرام باز کنید و `/start` بزنید
-۲. از منوی **سشن‌ها** فایل `.session` آپلود کنید یا از **شماره مجازی** سشن جدید بسازید
-۳. از منوی **تسک‌ها** نوع عملیات را انتخاب کنید
-۴. آمار را از منوی **آمار** ببینید
-
----
-
-## 🏗 ساختار پروژه
-
-```
-telegram-session-bot/
-├── bot/                    # بات تلگرام (aiogram)
-│   ├── handlers/           # هندلرهای دستورات
-│   ├── services/           # سرویس‌های اصلی
-│   ├── middlewares/        # میدلور ادمین
-│   ├── main.py
-│   ├── config.py
-│   ├── Dockerfile
-│   └── requirements.txt
-├── worker/                 # اجراکننده تسک‌ها (Telethon)
-│   ├── main.py
-│   ├── Dockerfile
-│   └── requirements.txt
-├── sessions/               # فایل‌های .session (auto-created)
-├── data/                   # دیتا JSON (auto-created)
-├── backups/                # بکاپ‌ها (auto-created)
-├── docker-compose.yml
-└── .env
-```
+- **Raw prices for users** — prices shown in SMM panel are direct API prices, no markup added
+- **Profit tracking** — admin sets markup % for internal reporting only
+- **SMM button name** — configurable from admin settings (`smm_panel_title` key)
+- **Deposit flow** — manual approval with automatic Telegram notification to user
+- **FSM safety** — all order states validated, `/cancel` works at every step
+- **Pagination** — categories (5/page) and services (6/page) with prev/next navigation
 
 ---
 
-## ⚠️ نکات مهم
+## 🔑 Admin Commands
 
-- فایل `.env` را هرگز در گیت‌هاب آپلود نکنید
-- پوشه `sessions/` حاوی اطلاعات حساس است — بکاپ بگیرید
-- برای هر سشن یک پروکسی رندوم از لیست انتخاب می‌شود
-- بکاپ خودکار هر ۱ ساعت به ادمین ارسال می‌شود
+| Command | Description |
+|---|---|
+| `/start` | Main menu (shows admin panel button if admin) |
+| `/admin` | Direct link to admin panel |
+| `/balance` | Quick balance check |
+| `/orders` | Quick orders view |
