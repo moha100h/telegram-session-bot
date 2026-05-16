@@ -1,7 +1,7 @@
 """
-User panel — profile, wallet, deposit, orders, support.
+User panel — profile, wallet, deposit, live order tracking, support.
 """
-import logging, os
+import logging
 from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery, Message,
@@ -15,10 +15,22 @@ from db.models import User
 from services.user_service import get_user, set_phone
 from services.deposit_service import create_deposit_request, get_user_transactions
 from services.settings_service import get_setting, get_wallets
-from services.order_service import get_user_orders
+from services.order_service import get_user_orders, get_order_by_id
+from services.smmpass import get_order_status
 
 logger = logging.getLogger("user")
 router = Router()
+
+STATUS_ICONS = {
+    "pending":    ("⏳", "در صف"),
+    "processing": ("🔄", "در حال انجام"),
+    "in progress":("🔄", "در حال انجام"),
+    "completed":  ("✅", "تکمیل شده"),
+    "partial":    ("⚠️", "ناقص"),
+    "cancelled":  ("❌", "کنسل شده"),
+    "failed":     ("💔", "ناموفق"),
+    "refunded":   ("↩️", "برگشت خورده"),
+}
 
 
 class UserState(StatesGroup):
@@ -30,14 +42,15 @@ class UserState(StatesGroup):
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 پنل SMM",       callback_data="menu_smmpass")],
-        [InlineKeyboardButton(text="💰 کیف پول",       callback_data="user_wallet"),
-         InlineKeyboardButton(text="📦 سفارش‌های من",  callback_data="user_orders")],
-        [InlineKeyboardButton(text="👤 پروفایل",       callback_data="user_profile"),
-         InlineKeyboardButton(text="📞 پشتیبانی",      callback_data="user_support")],
+        [InlineKeyboardButton(text="🛒 پنل SMM",        callback_data="menu_smmpass")],
+        [InlineKeyboardButton(text="💰 کیف پول",        callback_data="user_wallet"),
+         InlineKeyboardButton(text="📦 سفارش‌های من",   callback_data="user_orders")],
+        [InlineKeyboardButton(text="👤 پروفایل",        callback_data="user_profile"),
+         InlineKeyboardButton(text="📞 پشتیبانی",       callback_data="user_support")],
     ])
 
 
+# ── /start ────────────────────────────────────────────────────────────────────
 @router.message(F.text.startswith("/start"))
 async def cmd_start(msg: Message, state: FSMContext,
                     db_user: User = None, is_new_user: bool = False,
@@ -86,6 +99,7 @@ async def user_home(cb: CallbackQuery, state: FSMContext, db_user: User = None):
     )
 
 
+# ── Profile ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_profile")
 async def user_profile(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
@@ -93,7 +107,7 @@ async def user_profile(cb: CallbackQuery, db_user: User = None):
     await cb.message.edit_text(
         f"👤 <b>پروفایل من</b>\n\n"
         f"🔵 نام: <b>{u.display_name()}</b>\n"
-        f"🔹 یوزرنیم: @{u.username or '-'}\n"
+        f"🔹 یوزرنیم: @{u.username or '—'}\n"
         f"📱 شماره: <b>{u.phone or '— تایید نشده'}</b>\n"
         f"💰 موجودی: <b>${float(u.balance or 0):.2f}</b>\n"
         f"👥 دعوت‌ها: <b>{u.referral_count}</b> نفر\n"
@@ -120,10 +134,11 @@ async def verify_phone_start(cb: CallbackQuery, state: FSMContext):
 
 
 @router.message(UserState.verify_phone, F.contact)
-async def verify_phone_contact(msg: Message, state: FSMContext, db_user: User = None):
+async def verify_phone_contact(msg: Message, state: FSMContext):
     phone = msg.contact.phone_number
     async with AsyncSessionLocal() as session:
         await set_phone(session, msg.from_user.id, phone)
+        await session.commit()
     await state.clear()
     await msg.answer(
         f"✅ شماره <code>{phone}</code> ثبت شد.",
@@ -131,6 +146,7 @@ async def verify_phone_contact(msg: Message, state: FSMContext, db_user: User = 
     )
 
 
+# ── Wallet ────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_wallet")
 async def user_wallet(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
@@ -138,16 +154,17 @@ async def user_wallet(cb: CallbackQuery, db_user: User = None):
     await cb.message.edit_text(
         f"💰 <b>کیف پول</b>\n\n💵 موجودی: <b>${bal:.2f}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 واریز موجودی",   callback_data="user_deposit")],
-            [InlineKeyboardButton(text="📋 تاریخچه تراکنش", callback_data="user_transactions")],
-            [InlineKeyboardButton(text="🏠 بازگشت",         callback_data="user_home")],
+            [InlineKeyboardButton(text="💳 واریز موجودی",    callback_data="user_deposit")],
+            [InlineKeyboardButton(text="📋 تاریخچه تراکنش",  callback_data="user_transactions")],
+            [InlineKeyboardButton(text="🏠 بازگشت",          callback_data="user_home")],
         ]),
         parse_mode="HTML"
     )
 
 
+# ── Deposit ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_deposit")
-async def user_deposit_start(cb: CallbackQuery, state: FSMContext):
+async def user_deposit_start(cb: CallbackQuery):
     await cb.answer()
     await cb.message.edit_text(
         "💳 <b>واریز موجودی</b>\n\nروش پرداخت را انتخاب کنید:",
@@ -174,7 +191,7 @@ async def user_deposit_method(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"💳 <b>واریز {method}</b>\n\n"
         f"📤 آدرس کیف پول:\n<code>{wallet_addr}</code>\n\n"
-        f"مبلغ مورد نظر را به دلار وارد کنید:\n\n/cancel برای لغو",
+        f"⚠️ پس از واریز، مبلغ دلاری را وارد کنید:\n\n/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -184,14 +201,15 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear(); await msg.answer("❌ لغو شد."); return
     try:
-        amount = float(msg.text.strip())
+        amount = float(msg.text.strip().replace(",", ""))
         if amount <= 0: raise ValueError
     except ValueError:
-        await msg.answer("❌ مبلغ معتبر وارد کنید."); return
+        await msg.answer("❌ مبلغ معتبر وارد کنید (مثال: 10.5)"); return
     await state.update_data(deposit_amount=amount)
     await state.set_state(UserState.deposit_hash)
     await msg.answer(
-        f"✅ مبلغ: <b>${amount:.2f}</b>\n\n📝 هش تراکنش را وارد کنید:\n\n/cancel برای لغو",
+        f"✅ مبلغ: <b>${amount:.2f}</b>\n\n"
+        f"📝 هش تراکنش (TX Hash) را وارد کنید:\n\n/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -209,9 +227,11 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         await session.commit()
     await state.clear()
     await msg.answer(
-        f"✅ <b>درخواست واریز ثبت شد.</b>\n"
-        f"💵 مبلغ: <b>${amount:.2f}</b> | روش: <b>{method}</b>\n"
-        "⏳ در حال بررسی توسط ادمین...",
+        f"✅ <b>درخواست واریز ثبت شد!</b>\n\n"
+        f"💵 مبلغ: <b>${amount:.2f}</b>\n"
+        f"🔧 روش: <b>{method}</b>\n"
+        f"🔗 هش: <code>{tx_hash[:30]}...</code>\n\n"
+        "⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")]
         ]),
@@ -219,6 +239,7 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
     )
 
 
+# ── Transactions ──────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_transactions")
 async def user_transactions(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
@@ -231,12 +252,18 @@ async def user_transactions(cb: CallbackQuery, db_user: User = None):
                 [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
             ])
         ); return
+    TYPE_FA = {"deposit":"واریز","order":"سفارش","refund":"برگشت","manual":"دستی"}
+    ST_ICON = {"approved":"✅","pending":"⏳","rejected":"❌"}
     rows = []
-    for tx in txs[:10]:
-        icon = "✅" if tx.status == "approved" else ("❌" if tx.status == "rejected" else "⏳")
-        rows.append(f"{icon} <b>${float(tx.amount):.2f}</b> | {tx.method} | {tx.created_at.strftime('%m/%d %H:%M')}")
+    for tx in txs[:15]:
+        icon = ST_ICON.get(tx.status, "🟡")
+        tp   = TYPE_FA.get(tx.type, tx.type)
+        rows.append(
+            f"{icon} <b>${float(tx.amount):.2f}</b> | {tp} | {tx.method or '—'}\n"
+            f"   📅 {tx.created_at.strftime('%Y-%m-%d %H:%M')}"
+        )
     await cb.message.edit_text(
-        "📋 <b>تراکنش‌ها</b>\n\n" + "\n".join(rows),
+        "📋 <b>تراکنش‌های من</b>\n\n" + "\n\n".join(rows),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
         ]),
@@ -244,6 +271,7 @@ async def user_transactions(cb: CallbackQuery, db_user: User = None):
     )
 
 
+# ── Orders — live tracking ────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_orders")
 async def user_orders(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
@@ -257,37 +285,121 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
                 [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home")],
             ])
         ); return
-    ST = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","cancelled":"❌","failed":"💔"}
-    lines = []
-    for o in orders[:10]:
-        icon = ST.get(o.status, "🟡")
-        lines.append(
-            f"{icon} <b>#{o.id}</b> {o.service_name[:25]}\n"
-            f"   🔢{o.quantity:,} 💰${float(o.sell_price):.4f} 📅{o.created_at.strftime('%m/%d')}"
-        )
+    buttons = []
+    for o in orders[:12]:
+        icon, label = STATUS_ICONS.get(o.status, ("🟡", o.status))
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} | {o.service_name[:22]} | {label}",
+            callback_data=f"user_order_{o.id}"
+        )])
+    buttons.append([
+        InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="menu_smmpass"),
+        InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home"),
+    ])
     await cb.message.edit_text(
-        "📦 <b>سفارش‌های من</b>\n\n" + "\n\n".join(lines),
+        "📦 <b>سفارش‌های من</b>\n\nبرای جزئیات و وضعیت لحظه‌ای روی سفارش کلیک کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("user_order_"))
+async def user_order_detail(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    order_id = int(cb.data.split("_")[-1])
+    async with AsyncSessionLocal() as session:
+        order = await get_order_by_id(session, order_id)
+    if not order or order.user_id != db_user.id:
+        await cb.answer("سفارش یافت نشد!", show_alert=True); return
+
+    # وضعیت لحظه‌ای از API
+    live_status = order.status
+    live_start  = order.start_count
+    live_remains = order.remains
+    api_error   = None
+    try:
+        api_data    = await get_order_status(order.service_id)
+        live_status = api_data.get("status", order.status).lower()
+        live_start  = api_data.get("start_count", order.start_count)
+        live_remains = api_data.get("remains", order.remains)
+        # آپدیت DB
+        async with AsyncSessionLocal() as session:
+            from services.order_service import update_order_status, process_refund
+            updated = await update_order_status(
+                session, order_id, live_status,
+                start_count=int(live_start) if live_start is not None else None,
+                remains=int(live_remains) if live_remains is not None else None,
+            )
+            # برگشت خودکار پول اگه کنسل یا partial شد
+            refunded = 0.0
+            if updated and live_status in ("cancelled", "partial") and order.status != live_status:
+                refunded = await process_refund(session, updated)
+            await session.commit()
+    except Exception as e:
+        api_error = str(e)[:80]
+
+    icon, label = STATUS_ICONS.get(live_status, ("🟡", live_status))
+    done = 0
+    if live_start is not None and live_remains is not None:
+        try:
+            done = int(live_start) - int(live_remains)
+        except Exception:
+            done = 0
+
+    text = (
+        f"📦 <b>سفارش #{order.id}</b>\n\n"
+        f"🛒 سرویس: <b>{order.service_name}</b>\n"
+        f"🔗 لینک: <code>{order.link}</code>\n"
+        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+        f"💰 پرداخت: <b>${float(order.sell_price):.4f}</b>\n"
+        f"📅 تاریخ: <b>{order.created_at.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"{icon} وضعیت: <b>{label}</b>\n"
+    )
+    if live_start is not None:
+        text += f"🔢 شروع از: <b>{live_start:,}</b>\n"
+    if live_remains is not None:
+        text += f"⏳ باقی‌مانده: <b>{int(live_remains):,}</b>\n"
+    if done > 0:
+        text += f"✅ انجام شده: <b>{done:,}</b>\n"
+    if api_error:
+        text += f"\n⚠️ <i>خطا در دریافت وضعیت: {api_error}</i>\n"
+    if live_status == "cancelled":
+        text += f"\n↩️ <b>موجودی برگشت خورد!</b>"
+    elif live_status == "partial":
+        text += f"\n↩️ <b>مابقی برگشت خورد!</b>"
+
+    await cb.message.edit_text(
+        text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="menu_smmpass")],
-            [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home")],
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"user_order_{order_id}")],
+            [InlineKeyboardButton(text="🔙 بازگشت",    callback_data="user_orders")],
         ]),
         parse_mode="HTML"
     )
 
 
+# ── Support ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_support")
 async def user_support(cb: CallbackQuery):
     await cb.answer()
     async with AsyncSessionLocal() as session:
         support_url = await get_setting(session, "support_url", "")
-    text = "📞 <b>پشتیبانی</b>\n\n"
     buttons = []
-    if support_url:
-        text += f"برای ارتباط با پشتیبانی کلیک کنید:"
-        buttons.append([InlineKeyboardButton(text="💬 پشتیبانی", url=support_url)])
-    else:
-        text += "در حال حاضر پشتیبانی آنلاین در دسترس نیست."
+    if support_url and support_url.startswith("http"):
+        buttons.append([InlineKeyboardButton(text="💬 ارتباط با پشتیبانی", url=support_url)])
+    elif support_url and support_url.startswith("@"):
+        buttons.append([InlineKeyboardButton(
+            text="💬 ارتباط با پشتیبانی",
+            url=f"https://t.me/{support_url.lstrip('@')}"
+        )])
     buttons.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
+    text = (
+        "📞 <b>پشتیبانی</b>\n\n"
+        "برای ارتباط با تیم پشتیبانی کلیک کنید 👇"
+        if support_url else
+        "📞 <b>پشتیبانی</b>\n\n⚠️ در حال حاضر پشتیبانی آنلاین در دسترس نیست."
+    )
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
