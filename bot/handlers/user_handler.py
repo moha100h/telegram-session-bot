@@ -33,7 +33,7 @@ class UserState(StatesGroup):
 
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 پنل SMM",          callback_data="user_smm")],
+        [InlineKeyboardButton(text="📊 پنل SMM",          callback_data="menu_smmpass")],
         [InlineKeyboardButton(text="💰 کیف پول",          callback_data="user_wallet")],
         [InlineKeyboardButton(text="📦 سفارش‌های من",       callback_data="user_orders")],
         [InlineKeyboardButton(text="👤 پروفایل من",         callback_data="user_profile")],

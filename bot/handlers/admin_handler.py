@@ -58,6 +58,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="⚙️ تنظیمات",       callback_data="adm_settings")],
         [InlineKeyboardButton(text="🔑 ادمین‌ها",       callback_data="adm_admins"),
          InlineKeyboardButton(text="📢 پیام همگانی",    callback_data="adm_broadcast")],
+        [InlineKeyboardButton(text="🚀 SMMPass پنل",    callback_data="adm_smmpass")],
         [InlineKeyboardButton(text="📊 آمار",           callback_data="adm_stats")],
     ])
 
@@ -525,3 +526,161 @@ async def adm_broadcast_do(msg: Message, state: FSMContext):
 
     await msg.answer(f"✅ پیام به {sent} کاربر ارسال شد.")
     await state.clear()
+
+
+# ─── SMMPass Admin Panel ──────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "adm_smmpass")
+async def adm_smmpass_menu(cb: CallbackQuery):
+    if not await check_admin(cb):
+        await cb.answer("⛔️", show_alert=True)
+        return
+    await cb.answer()
+    from services.smmpass import get_balance, get_services
+    try:
+        bal_data = await get_balance()
+        bal      = bal_data.get("balance", "?")
+        currency = bal_data.get("currency", "USD")
+    except Exception as e:
+        bal, currency = f"خطا: {e}", ""
+
+    services = await get_services()
+    async with AsyncSessionLocal() as session:
+        markup_pct = await get_setting(session, "smm_markup_percent", "20")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💹 تنظیم درصد سود",    callback_data="adm_sp_markup")],
+        [InlineKeyboardButton(text="📋 دسته‌بندی‌ها",       callback_data="adm_sp_cats")],
+        [InlineKeyboardButton(text="🔄 رفرش سرویس‌ها",     callback_data="adm_sp_refresh")],
+        [InlineKeyboardButton(text="📦 سفارشات SMMPass",   callback_data="adm_sp_orders")],
+        [InlineKeyboardButton(text="🏠 بازگشت",            callback_data="menu_admin")],
+    ])
+    await cb.message.edit_text(
+        f"🚀 <b>پنل SMMPass</b>\n\n"
+        f"💰 موجودی API: <b>{bal} {currency}</b>\n"
+        f"📊 تعداد سرویس‌ها: <b>{len(services)}</b>\n"
+        f"💹 درصد سود فعلی: <b>{markup_pct}%</b>\n\n"
+        "یک بخش را انتخاب کنید:",
+        reply_markup=kb, parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_sp_markup")
+async def adm_sp_markup_start(cb: CallbackQuery, state: FSMContext):
+    if not await check_admin(cb):
+        await cb.answer("⛔️", show_alert=True)
+        return
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        current = await get_setting(session, "smm_markup_percent", "20")
+    await state.set_state(AdminState.set_setting_val)
+    await state.update_data(setting_key="smm_markup_percent")
+    await cb.message.edit_text(
+        f"💹 <b>تنظیم درصد سود SMMPass</b>\n\n"
+        f"درصد فعلی: <b>{current}%</b>\n\n"
+        "درصد جدید را وارد کنید (مثال: <code>10</code> یعنی ۱۰٪ سود روی قیمت API):\n\n"
+        "/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_sp_refresh")
+async def adm_sp_refresh(cb: CallbackQuery):
+    if not await check_admin(cb):
+        await cb.answer("⛔️", show_alert=True)
+        return
+    await cb.answer("در حال رفرش...")
+    from services.smmpass import clear_cache, get_services
+    clear_cache()
+    services = await get_services(force=True)
+    await cb.message.edit_text(
+        f"✅ <b>سرویس‌ها رفرش شدند</b>\n\n📊 تعداد: <b>{len(services)}</b> سرویس",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_smmpass")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_sp_cats")
+async def adm_sp_cats(cb: CallbackQuery):
+    if not await check_admin(cb):
+        await cb.answer("⛔️", show_alert=True)
+        return
+    await cb.answer()
+    from services.smmpass import get_services
+    async with AsyncSessionLocal() as session:
+        markup_pct = float(await get_setting(session, "smm_markup_percent", "20"))
+
+    services = await get_services()
+    cats: dict = {}
+    for s in services:
+        cat = s.get("category", "Other")
+        if cat not in cats:
+            cats[cat] = {"count": 0, "min_r": float("inf"), "max_r": 0.0}
+        r = float(s.get("rate", 0))
+        cats[cat]["count"] += 1
+        cats[cat]["min_r"] = min(cats[cat]["min_r"], r)
+        cats[cat]["max_r"] = max(cats[cat]["max_r"], r)
+
+    lines = []
+    for cat, info in sorted(cats.items(), key=lambda x: -x[1]["count"]):
+        sell_min = round(info["min_r"] * (1 + markup_pct / 100), 4)
+        sell_max = round(info["max_r"] * (1 + markup_pct / 100), 4)
+        short = cat.replace("TG - ", "")[:35]
+        lines.append(
+            f"📌 <b>{short}</b> ({info['count']} سرویس)\n"
+            f"   💰 ${sell_min:.4f} – ${sell_max:.4f} / 1K"
+        )
+
+    text = f"📋 <b>دسته‌بندی‌های SMMPass</b> (سود: {markup_pct:.0f}%)\n\n" + "\n\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n\n..."
+
+    await cb.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_smmpass")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_sp_orders")
+async def adm_sp_orders(cb: CallbackQuery):
+    if not await check_admin(cb):
+        await cb.answer("⛔️", show_alert=True)
+        return
+    await cb.answer()
+    from services.order_service import get_all_orders
+    async with AsyncSessionLocal() as session:
+        orders = await get_all_orders(session, limit=20)
+
+    if not orders:
+        await cb.message.edit_text(
+            "📦 هیچ سفارشی ثبت نشده.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_smmpass")]
+            ])
+        )
+        return
+
+    STATUS_ICON = {
+        "pending": "⏳", "processing": "🔄", "completed": "✅",
+        "partial": "⚠️", "cancelled": "❌", "failed": "💔"
+    }
+    lines = []
+    for o in orders:
+        icon = STATUS_ICON.get(o.status, "❓")
+        lines.append(
+            f"{icon} <b>#{o.id}</b> | {o.service_name[:22]}\n"
+            f"   👤 uid:{o.user_id} | 🔢 {o.quantity:,} | 💰 ${float(o.sell_price):.4f}"
+        )
+
+    await cb.message.edit_text(
+        "📦 <b>آخرین سفارشات SMMPass</b>\n\n" + "\n\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_smmpass")]
+        ]),
+        parse_mode="HTML"
+    )
