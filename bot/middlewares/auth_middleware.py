@@ -1,42 +1,48 @@
 """
-Auth middleware - auto register users, check ban.
+Auth middleware - auto register users, check ban status.
 """
+import os
 import logging
-from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 from db.database import AsyncSessionLocal
-from services.user_service import get_or_create_user
+from services.user_service import get_or_create_user, get_admin
 
 logger = logging.getLogger("auth")
+SUPERADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 
 class AuthMiddleware(BaseMiddleware):
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
+    async def __call__(self, handler, event: TelegramObject, data: dict):
         tg_user = None
         if isinstance(event, Message):
             tg_user = event.from_user
         elif isinstance(event, CallbackQuery):
             tg_user = event.from_user
 
-        if tg_user and not tg_user.is_bot:
-            async with AsyncSessionLocal() as session:
-                try:
-                    user = await get_or_create_user(session, tg_user)
-                    await session.commit()
-                    data["db_user"] = user
-                    if user.is_banned:
-                        if isinstance(event, Message):
-                            await event.answer("⛔️ \u062d\u0633\u0627\u0628 \u0634\u0645\u0627 \u0645\u0633\u062f\u0648\u062f \u0634\u062f\u0647 \u0627\u0633\u062a.")
-                        elif isinstance(event, CallbackQuery):
-                            await event.answer("⛔️ \u062d\u0633\u0627\u0628 \u0634\u0645\u0627 \u0645\u0633\u062f\u0648\u062f \u0634\u062f\u0647 \u0627\u0633\u062a.", show_alert=True)
-                        return
-                except Exception as e:
-                    logger.error(f"AuthMiddleware error: {e}")
+        if not tg_user:
+            return await handler(event, data)
 
-        return await handler(event, data)
+        async with AsyncSessionLocal() as session:
+            user, is_new = await get_or_create_user(session, tg_user)
+            await session.commit()
+
+            if user.is_banned:
+                if isinstance(event, Message):
+                    await event.answer("⛔️ حساب شما مسدود شده است.")
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("⛔️ حساب شما مسدود شده است.", show_alert=True)
+                return
+
+            # Check if admin
+            admin = await get_admin(session, tg_user.id)
+            is_superadmin = (tg_user.id == SUPERADMIN_ID)
+
+            data["db_user"]      = user
+            data["db_session"]   = session
+            data["is_new_user"]  = is_new
+            data["admin_record"] = admin
+            data["is_superadmin"]= is_superadmin
+            data["is_admin"]     = is_superadmin or (admin is not None)
+
+            return await handler(event, data)
