@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from handlers import (
     start, sessions, tasks, stats, backup,
     proxy, virtual_number, warmer_handler,
-    auto_session, cleanup, social,
+    auto_session, cleanup, social, fjpanel_handler,
 )
 from services.backup import BackupService
 from services.proxy_fetcher import ProxyFetcher
@@ -47,6 +47,7 @@ async def main():
     dp.include_router(auto_session.router)
     dp.include_router(cleanup.router)
     dp.include_router(social.router)
+    dp.include_router(fjpanel_handler.router)
 
     asyncio.create_task(BackupService(bot, redis).run())
     asyncio.create_task(ProxyFetcher(redis).run())
