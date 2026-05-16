@@ -366,7 +366,7 @@ async def sp_order_qty(msg: Message, state: FSMContext, db_user: User = None):
         f"\U0001f522 \u062a\u0639\u062f\u0627\u062f: <b>{qty:,}</b>\n"
         f"\U0001f4b0 \u0647\u0632\u06cc\u0646\u0647: <b>${total:.4f}</b>\n"
         f"\U0001f4b3 \u0645\u0648\u062c\u0648\u062f\u06cc: <b>${bal:.4f}</b>\n\n"
-        f"{'\u2705 \u0645\u0648\u062c\u0648\u062f\u06cc \u06a9\u0627\u0641\u06cc \u0627\u0633\u062a' if bal_ok else '\u274c \u0645\u0648\u062c\u0648\u062f\u06cc \u0646\u0627\u06a9\u0627\u0641\u06cc \u2014 \u0627\u0628\u062a\u062f\u0627 \u0634\u0627\u0631\u0698 \u06a9\u0646\u06cc\u062f'}",
+        ("✅ موجودی کافی است" if bal_ok else "❌ موجودی ناکافی — ابتدا شارژ کنید"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML"
     )
