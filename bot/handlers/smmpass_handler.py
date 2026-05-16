@@ -18,6 +18,7 @@ from services.smmpass import (
 from services.user_service import deduct_balance, add_balance
 from services.order_service import create_order
 from services.settings_service import get_setting
+from services.order_service import calc_order_price
 
 logger   = logging.getLogger("smm_user")
 router   = Router()
@@ -68,8 +69,9 @@ def _cicon(cat: str) -> str:
             return v
     return "📌"
 
-def _total(rate: float, qty: int) -> float:
-    return round(rate * qty / 1000, 4)
+def _total(rate: float, qty: int, markup: float = 0.0) -> float:
+    base = rate * qty / 1000
+    return round(base * (1 + markup / 100), 4)
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
@@ -115,7 +117,7 @@ async def sp_cats(cb: CallbackQuery):
         min_r = min(float(s.get("rate", 0)) for s in svcs)
         h     = _ch(cat)
         buttons.append([InlineKeyboardButton(
-            text=f"{icon} {short}  ({len(svcs)}) · از ${min_r:.4f}/1K",
+            text=f"{icon} {short}  ({len(svcs)})",
             callback_data=f"sp_cat_{h}_0"
         )])
     nav = []
@@ -153,10 +155,14 @@ async def sp_cat_svcs(cb: CallbackQuery):
     total    = max(1, math.ceil(len(cat_svcs) / PAGE_SVC))
     page     = max(0, min(page, total - 1))
     buttons  = []
+    async with AsyncSessionLocal() as _s2:
+        from services.settings_service import get_setting as _gs2
+        _markup = float(await _gs2(_s2, "smm_markup_percent", "0"))
     for s in cat_svcs[page * PAGE_SVC:(page + 1) * PAGE_SVC]:
-        rate = float(s.get("rate", 0))
+        rate      = float(s.get("rate", 0))
+        sell_rate = round(rate * (1 + _markup / 100), 4)
         buttons.append([InlineKeyboardButton(
-            text=f"{s['name'][:35]}  ·  ${rate:.4f}/1K",
+            text=f"{s['name'][:35]}  ·  ${sell_rate:.4f}/1K",
             callback_data=f"sp_svc_{s['service']}"
         )])
     nav = []
@@ -190,13 +196,18 @@ async def sp_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: User = No
     svc_type = svc.get("type", "default")
     desc     = (svc.get("desc") or "")[:300]
     bal      = float(db_user.balance or 0) if db_user else 0
+    async with AsyncSessionLocal() as _s:
+        from services.settings_service import get_setting as _gs
+        markup = float(await _gs(_s, "smm_markup_percent", "0"))
+    sell_rate = round(rate * (1 + markup / 100), 4)
     await state.update_data(
         sp_svc_id=str(svc_id), sp_svc_name=svc["name"],
-        sp_rate=rate, sp_min=min_q, sp_max=max_q, sp_type=svc_type,
+        sp_rate=rate, sp_sell_rate=sell_rate, sp_markup=markup,
+        sp_min=min_q, sp_max=max_q, sp_type=svc_type,
     )
     text = (
         f"🛒 <b>{svc['name']}</b>\n\n"
-        f"💰 قیمت: <b>${rate:.4f}</b> / هر ۱۰۰۰\n"
+        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n"
         f"📊 حداقل: <b>{min_q:,}</b>  |  حداکثر: <b>{max_q:,}</b>\n"
         f"🔧 نوع: <b>{TYPE_LABELS.get(svc_type, svc_type)}</b>\n"
         f"💳 موجودی شما: <b>${bal:.2f}</b>\n"
@@ -255,10 +266,11 @@ async def sp_got_link(msg: Message, state: FSMContext):
         label = "کامنت‌ها (هر خط یک کامنت)" if svc_type == "custom_comments" else "یوزرنیم‌ها (هر خط یک یوزرنیم)"
         await msg.answer(f"✏️ <b>{label}:</b>\n\n/cancel برای لغو", parse_mode="HTML"); return
     await state.set_state(SPState.order_qty)
-    min_q = data.get("sp_min", 1); max_q = data.get("sp_max", 1000000); rate = data.get("sp_rate", 0)
+    min_q = data.get("sp_min", 1); max_q = data.get("sp_max", 1000000)
+    sell_rate = data.get("sp_sell_rate", data.get("sp_rate", 0))
     await msg.answer(
         f"🔢 <b>تعداد را وارد کنید:</b>\n\nحداقل: <b>{min_q:,}</b>  |  حداکثر: <b>{max_q:,}</b>\n"
-        f"💰 قیمت: <b>${rate:.4f}</b> / هر ۱۰۰۰\n\n/cancel برای لغو",
+        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n\n/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -294,12 +306,13 @@ async def sp_got_qty(msg: Message, state: FSMContext, db_user: User = None):
 
 
 async def _show_confirm(msg: Message, state: FSMContext, db_user: User = None):
-    data   = await state.get_data()
-    name   = data.get("sp_svc_name", "")
-    link   = data.get("sp_link", "")
-    qty    = data.get("sp_qty", 1)
-    rate   = data.get("sp_rate", 0)
-    total  = _total(rate, qty)
+    data      = await state.get_data()
+    name      = data.get("sp_svc_name", "")
+    link      = data.get("sp_link", "")
+    qty       = data.get("sp_qty", 1)
+    rate      = data.get("sp_rate", 0)
+    markup    = data.get("sp_markup", 0.0)
+    total     = _total(rate, qty, markup)
     bal    = float(db_user.balance or 0) if db_user else 0
     bal_ok = bal >= total
     text = (
@@ -330,9 +343,10 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
     link     = data.get("sp_link", "")
     qty      = data.get("sp_qty", 1)
     rate     = data.get("sp_rate", 0)
+    markup   = data.get("sp_markup", 0.0)
     svc_type = data.get("sp_type", "default")
     extra    = data.get("sp_extra", "")
-    total    = _total(rate, qty)
+    total    = _total(rate, qty, markup)
     if not svc_id:
         await cb.message.edit_text(
             "❌ اطلاعات سفارش یافت نشد. دوباره از ابتدا سفارش دهید.",
@@ -381,7 +395,7 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
         order = await create_order(
             session, user_id=db_user.id, service_id=int(svc_id),
             service_name=svc_name, link=link, quantity=qty,
-            cost_price=round(rate * qty / 1000, 6), sell_price=total,
+            cost_price=round(rate * qty / 1000, 6), sell_price=total,  # sell includes markup
         )
     await state.clear()
     await cb.message.edit_text(
