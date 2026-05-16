@@ -1,19 +1,22 @@
 """
 Instagram & YouTube section.
-Instagram downloader: streams media directly to Telegram — zero disk storage.
+Downloader: yt-dlp with in-memory buffer — zero disk storage.
+Supports: Reels, Posts, IGTV, Carousels
 """
 import asyncio
 import io
 import logging
 import os
 import re
-import httpx
+import tempfile
+import shutil
 
 from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery, Message,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BufferedInputFile,
+    URLInputFile,
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -22,27 +25,20 @@ logger   = logging.getLogger("social")
 router   = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# ─── Regex patterns ────────────────────────────────────────────────────────────
-
 IG_URL_RE = re.compile(
-    r"(https?://)?(www\.)?instagram\.com/"
-    r"(p|reel|tv|stories|reels)/([A-Za-z0-9_\-]+)"
+    r"https?://(?:www\.)?instagram\.com/"
+    r"(?:p|reel|tv|reels)/([A-Za-z0-9_\-]+)"
 )
-IG_SHORT_RE = re.compile(r"(https?://)?instagr\.am/p/([A-Za-z0-9_\-]+)")
-IG_USER_RE  = re.compile(r"^@?([A-Za-z0-9_.]{1,30})$")
-
-YT_URL_RE = re.compile(
-    r"(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)([A-Za-z0-9_\-]+)"
-)
+IG_SHORT_RE = re.compile(r"https?://instagr\.am/p/([A-Za-z0-9_\-]+)")
 
 
-# ─── FSM ───────────────────────────────────────────────────────────────────────
+# ─── FSM ──────────────────────────────────────────────────────────────────
 
 class IGState(StatesGroup):
     waiting = State()
 
 
-# ─── Menus ─────────────────────────────────────────────────────────────────────
+# ─── Menus ──────────────────────────────────────────────────────────────────
 
 def social_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -66,15 +62,14 @@ def youtube_menu() -> InlineKeyboardMarkup:
     ])
 
 
-# ─── Handlers: menus ───────────────────────────────────────────────────────────
+# ─── Menu handlers ───────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "menu_social")
 async def menu_social(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
     await cb.message.edit_text(
-        "📸 <b>اینستاگرام و یوتیوب</b>\n"
-        "یک بخش را انتخاب کنید:",
+        "📸 <b>اینستاگرام و یوتیوب</b>\nیک بخش را انتخاب کنید:",
         reply_markup=social_menu(), parse_mode="HTML",
     )
 
@@ -85,9 +80,9 @@ async def menu_instagram(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await cb.message.edit_text(
         "📸 <b>خدمات اینستاگرام</b>\n\n"
-        "• دانلود پست، ریل، IGTV\n"
+        "• پست، ریل، IGTV و کاروسل\n"
         "• بدون ذخیره روی سرور\n"
-        "• ارسال مستقیم به تلگرام",
+        "⚠️ استوری پشتیبانی نمی‌شود (نیاز به لاگین دارد)",
         reply_markup=instagram_menu(), parse_mode="HTML",
     )
 
@@ -97,8 +92,7 @@ async def menu_youtube(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer()
     await cb.message.edit_text(
-        "🎥 <b>خدمات یوتیوب</b>\n\n"
-        "بزودی — به زودی اضافه می‌شود.",
+        "🎥 <b>خدمات یوتیوب</b>\n\nبزودی — به زودی اضافه می‌شود.",
         reply_markup=youtube_menu(), parse_mode="HTML",
     )
 
@@ -108,7 +102,7 @@ async def yt_soon(cb: CallbackQuery):
     await cb.answer("🚧 بزودی اضافه می‌شود!", show_alert=True)
 
 
-# ─── Instagram downloader ──────────────────────────────────────────────────────
+# ─── Instagram download flow ───────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "ig_download")
 async def ig_download_start(cb: CallbackQuery, state: FSMContext):
@@ -116,10 +110,10 @@ async def ig_download_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(IGState.waiting)
     await cb.message.edit_text(
         "⬇️ <b>دانلود اینستاگرام</b>\n\n"
-        "لینک پست، ریل یا IGTV را بفرستید:\n"
-        "<code>https://www.instagram.com/reel/ABC123/</code>\n\n"
-        "یا شورتکاد:\n"
-        "<code>https://instagr.am/p/ABC123/</code>",
+        "لینک پست، ریل یا IGTV بفرستید:\n"
+        "<code>https://www.instagram.com/reel/ABC123/</code>\n"
+        "<code>https://www.instagram.com/p/ABC123/</code>\n\n"
+        "⚠️ فقط پست‌های عمومی پشتیبانی می‌شوند",
         parse_mode="HTML",
     )
 
@@ -132,220 +126,188 @@ async def ig_download_handle(msg: Message, state: FSMContext):
     text = (msg.text or "").strip()
     await state.clear()
 
-    # Extract shortcode
-    shortcode = _extract_shortcode(text)
-    if not shortcode:
+    # Normalize URL
+    url = _normalize_url(text)
+    if not url:
         await msg.answer(
             "❌ لینک معتبر نیست.\n"
             "مثال: <code>https://www.instagram.com/reel/ABC123/</code>",
-            parse_mode="HTML",
+            parse_mode="HTML", reply_markup=instagram_menu(),
+        )
+        return
+
+    # Check if story
+    if "/stories/" in url:
+        await msg.answer(
+            "⚠️ استوری پشتیبانی نمی‌شود.\n"
+            "فقط پست، ریل و IGTV قابل دانلود هستند.",
             reply_markup=instagram_menu(),
         )
         return
 
-    status = await msg.answer("⏳ در حال دریافت اطلاعات...", parse_mode="HTML")
+    status = await msg.answer("⏳ در حال دانلود...")
 
     try:
-        medias = await _fetch_instagram(shortcode)
+        medias = await asyncio.wait_for(
+            _download_with_ytdlp(url),
+            timeout=120,
+        )
+    except asyncio.TimeoutError:
+        await status.edit_text("❌ تایماوت — لینک را دوباره امتحان کنید.",
+                               reply_markup=instagram_menu())
+        return
     except Exception as e:
-        logger.error("[ig] fetch error: %s", e)
+        logger.error("[ig] download error: %s", e)
         await status.edit_text(
-            f"❌ خطا در دریافت: {str(e)[:100]}",
+            f"❌ خطا: {str(e)[:120]}",
             reply_markup=instagram_menu(),
         )
         return
 
     if not medias:
         await status.edit_text(
-            "❌ مدیایی پیدا نشد. شاید پست خصوصی است.",
+            "❌ مدیایی پیدا نشد.\n"
+            "شاید پست خصوصی است یا لینک نامعتبر.",
             reply_markup=instagram_menu(),
         )
         return
 
     total = len(medias)
-    await status.edit_text(f"⏳ در حال ارسال {total} فایل... (0‌سرور ذخیره نمی‌شود)")
+    await status.edit_text(f"⏳ در حال ارسال {total} فایل...")
 
     sent = 0
     for i, media in enumerate(medias, 1):
         try:
-            await _send_media_stream(msg, media, i, total)
+            await _send_from_buffer(msg, media, i, total)
             sent += 1
         except Exception as e:
-            logger.error("[ig] send error item %d: %s", i, e)
+            logger.error("[ig] send %d: %s", i, e)
             await msg.answer(f"⚠️ فایل {i} ارسال نشد: {str(e)[:80]}")
 
     await status.edit_text(
-        f"✅ تمام شد! {sent}/{total} فایل ارسال شد.",
+        f"✅ {sent}/{total} فایل ارسال شد.",
         reply_markup=instagram_menu(),
     )
 
 
-# ─── Core: extract shortcode ───────────────────────────────────────────────────
+# ─── yt-dlp downloader (no disk) ─────────────────────────────────────────────────────
 
-def _extract_shortcode(text: str) -> str | None:
-    """Extract Instagram shortcode from URL or raw shortcode."""
-    m = IG_URL_RE.search(text)
-    if m:
-        return m.group(4)
-    m = IG_SHORT_RE.search(text)
-    if m:
-        return m.group(2)
-    # Raw shortcode (11 chars, alphanumeric)
-    if re.match(r"^[A-Za-z0-9_\-]{10,15}$", text):
-        return text
-    return None
-
-
-# ─── Core: fetch media info via instaloader API (no login needed for public) ───
-
-async def _fetch_instagram(shortcode: str) -> list[dict]:
+async def _download_with_ytdlp(url: str) -> list[dict]:
     """
-    Fetch media URLs using Instagram's public GraphQL endpoint.
-    No login, no cookies, no disk storage.
-    Returns list of {type, url, filename}
+    Use yt-dlp to extract media URLs, then download into RAM.
+    No temp files on disk.
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.instagram.com/",
-        "X-IG-App-ID": "936619743392459",
+    import yt_dlp
+
+    ydl_opts = {
+        "quiet":           True,
+        "no_warnings":     True,
+        "extract_flat":    False,
+        "skip_download":   True,   # just get info first
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
+                          "Mobile/15E148 Safari/604.1",
+        },
     }
 
-    # Try multiple endpoints
-    results = await _try_graphql(shortcode, headers)
-    if not results:
-        results = await _try_oembed(shortcode, headers)
-    return results
+    loop = asyncio.get_event_loop()
 
+    def _extract():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(url, download=False)
 
-async def _try_graphql(shortcode: str, headers: dict) -> list[dict]:
-    url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
-    try:
-        async with httpx.AsyncClient(headers=headers, timeout=20,
-                                     follow_redirects=True) as client:
-            r = await client.get(url)
-            if r.status_code != 200:
-                return []
-            data = r.json()
-    except Exception as e:
-        logger.warning("[ig] graphql err: %s", e)
+    info = await loop.run_in_executor(None, _extract)
+    if not info:
         return []
 
-    try:
-        media = data["graphql"]["shortcode_media"]
-    except (KeyError, TypeError):
-        try:
-            media = data["items"][0]
-        except (KeyError, TypeError, IndexError):
-            return []
+    medias = []
 
-    return _parse_media_node(media, shortcode)
+    # Carousel / playlist
+    entries = info.get("entries") or [info]
 
+    for entry in entries:
+        if not entry:
+            continue
 
-async def _try_oembed(shortcode: str, headers: dict) -> list[dict]:
-    """Fallback: use a public Instagram downloader API."""
-    apis = [
-        f"https://api.snapinsta.app/v1?url=https://www.instagram.com/p/{shortcode}/",
-        f"https://instagram-downloader-download-instagram-videos-stories.p.rapidapi.com/index?url=https://www.instagram.com/p/{shortcode}/",
-    ]
-    # Try snapinsta-style API (no key needed)
-    try:
-        api_url = f"https://api.instagramdl.io/download?url=https://www.instagram.com/p/{shortcode}/"
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            r = await client.get(api_url)
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("data", {}).get("items", []) or data.get("items", [])
-                results = []
-                for item in items:
-                    media_url = item.get("url") or item.get("video_url") or item.get("image_url")
-                    if media_url:
-                        is_video = "video" in item.get("type", "") or ".mp4" in media_url
-                        results.append({
-                            "type": "video" if is_video else "photo",
-                            "url": media_url,
-                            "filename": f"{shortcode}_{len(results)+1}.{'mp4' if is_video else 'jpg'}",
-                        })
-                if results:
-                    return results
-    except Exception as e:
-        logger.warning("[ig] oembed err: %s", e)
+        # Pick best video format under 50MB
+        video_url = None
+        thumb_url  = entry.get("thumbnail")
 
-    return []
+        formats = entry.get("formats") or []
+        # Sort by filesize asc, pick largest under 50MB
+        video_formats = [
+            f for f in formats
+            if f.get("vcodec") != "none"
+            and f.get("url")
+            and (f.get("filesize") or 0) < 50 * 1024 * 1024
+        ]
+        if not video_formats:
+            # No size info — just pick best quality
+            video_formats = [
+                f for f in formats
+                if f.get("vcodec") != "none" and f.get("url")
+            ]
 
+        if video_formats:
+            best = max(video_formats,
+                       key=lambda f: f.get("height") or f.get("quality") or 0)
+            video_url = best.get("url")
 
-def _parse_media_node(media: dict, shortcode: str) -> list[dict]:
-    """Parse Instagram GraphQL media node into list of {type, url, filename}."""
-    results = []
+        if video_url:
+            medias.append({"type": "video", "url": video_url,
+                           "thumb": thumb_url, "title": entry.get("title", "")})
+        elif thumb_url:
+            medias.append({"type": "photo", "url": thumb_url,
+                           "title": entry.get("title", "")})
 
-    media_type = media.get("__typename", "") or media.get("media_type", "")
-
-    # Carousel / sidecar
-    edges = (media.get("edge_sidecar_to_children", {}).get("edges", [])
-             or media.get("carousel_media", []))
-    if edges:
-        for i, edge in enumerate(edges):
-            node = edge.get("node", edge)  # graphql vs v1
-            results.extend(_parse_single_node(node, shortcode, i + 1))
-        return results
-
-    # Single
-    results.extend(_parse_single_node(media, shortcode, 1))
-    return results
+    return medias
 
 
-def _parse_single_node(node: dict, shortcode: str, idx: int) -> list[dict]:
-    # Video
-    video_url = node.get("video_url")
-    if video_url:
-        return [{"type": "video", "url": video_url,
-                 "filename": f"{shortcode}_{idx}.mp4"}]
-    # Image
-    img = (node.get("display_url")
-           or _best_image(node.get("display_resources", []))
-           or _best_image(node.get("image_versions2", {}).get("candidates", [])))
-    if img:
-        return [{"type": "photo", "url": img,
-                 "filename": f"{shortcode}_{idx}.jpg"}]
-    return []
-
-
-def _best_image(resources: list) -> str | None:
-    if not resources:
-        return None
-    best = max(resources, key=lambda r: r.get("width", 0) or r.get("config_width", 0))
-    return best.get("src") or best.get("url")
-
-
-# ─── Core: stream media to Telegram (no disk) ──────────────────────────────────
-
-async def _send_media_stream(msg: Message, media: dict, idx: int, total: int):
+async def _send_from_buffer(msg: Message, media: dict, idx: int, total: int):
     """
-    Download media into RAM buffer and send directly to Telegram.
-    No temp files, no disk writes.
+    Download into RAM buffer, send to Telegram. Zero disk usage.
     """
+    import httpx
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
+                      "Mobile/15E148 Safari/604.1",
         "Referer": "https://www.instagram.com/",
     }
+
+    caption = f"📸 {idx}/{total}" if total > 1 else "📸 Instagram"
+    if media.get("title"):
+        caption += f"\n{media['title'][:100]}"
 
     async with httpx.AsyncClient(headers=headers, timeout=60,
                                  follow_redirects=True) as client:
         r = await client.get(media["url"])
         r.raise_for_status()
-        data = r.content  # in-memory bytes, no disk
+        data = r.content
 
-    buf      = io.BytesIO(data)
-    filename = media["filename"]
-    caption  = f"📸 {idx}/{total}" if total > 1 else "📸 Instagram"
-    file_obj = BufferedInputFile(buf.read(), filename=filename)
+    file_obj = BufferedInputFile(data, filename=f"ig_{idx}.mp4"
+                                 if media["type"] == "video" else f"ig_{idx}.jpg")
 
     if media["type"] == "video":
-        await msg.answer_video(file_obj, caption=caption)
+        await msg.answer_video(file_obj, caption=caption,
+                               supports_streaming=True)
     else:
         await msg.answer_photo(file_obj, caption=caption)
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────────────────────────
+
+def _normalize_url(text: str) -> str | None:
+    """Extract and normalize Instagram URL."""
+    m = IG_URL_RE.search(text)
+    if m:
+        return m.group(0).split("?")[0].rstrip("/") + "/"
+    m = IG_SHORT_RE.search(text)
+    if m:
+        return f"https://www.instagram.com/p/{m.group(1)}/"
+    # stories
+    if "instagram.com/stories/" in text:
+        return text.split("?")[0]
+    return None
