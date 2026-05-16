@@ -30,6 +30,9 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔥 Warmer",      callback_data="menu_warmer"),
             InlineKeyboardButton(text="🤖 خرید سشن",   callback_data="menu_autosession"),
         ],
+        [
+            InlineKeyboardButton(text="📸 اینستاگرام و یوتیوب", callback_data="menu_social"),
+        ],
     ])
 
 
