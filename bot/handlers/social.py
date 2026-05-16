@@ -1,8 +1,8 @@
 """
 Instagram & YouTube section.
-Downloader: yt-dlp (confirmed working, 1920p, fast CDN).
+Downloader: yt-dlp.
 Account Manager: auto-create, manage, follow/like.
-Zero disk storage for downloads. Live timeline.
+Live timeline with instant edit on each step.
 """
 import asyncio
 import logging
@@ -24,7 +24,7 @@ logger   = logging.getLogger("social")
 router   = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-IG_URL_RE   = re.compile(
+IG_URL_RE = re.compile(
     r"https?://(?:www\.)?instagram\.com/(?:p|reel|tv|reels)/([A-Za-z0-9_\-]+)"
 )
 IG_SHORT_RE = re.compile(r"https?://instagr\.am/p/([A-Za-z0-9_\-]+)")
@@ -46,30 +46,23 @@ class IGState(StatesGroup):
 
 # ─── Timeline ─────────────────────────────────────────────────────────────────
 class TL:
-    """
-    Live timeline with instant edit on each step change.
-    Steps: [icon, label, status, detail, start_time]
-    status: wait | run | ok | err
-    """
     def __init__(self, msg, title=""):
-        self.msg    = msg          # aiogram Message to edit
-        self.t0     = time.monotonic()
-        self._si    = 0
-        self.steps  = []
-        self.title  = title
-        self._lock  = asyncio.Lock()
-        self._last_edit = 0
-        self._min_interval = 0.8   # min seconds between edits
+        self.msg   = msg
+        self.t0    = time.monotonic()
+        self._si   = 0
+        self.steps = []
+        self.title = title
+        self._lock = asyncio.Lock()
+        self._last_edit = 0.0
+        self._min_interval = 1.0
 
     def add(self, icon, text):
         self.steps.append([icon, text, "wait", "", None])
         return len(self.steps) - 1
 
     async def run(self, i, detail=""):
-        # mark previous running as ok
         for s in self.steps:
-            if s[2] == "run":
-                s[2] = "ok"
+            if s[2] == "run": s[2] = "ok"
         self.steps[i][2] = "run"
         self.steps[i][3] = detail
         self.steps[i][4] = time.monotonic()
@@ -86,16 +79,12 @@ class TL:
         await self._edit()
 
     async def update(self, i, detail):
-        """Update detail of running step without changing status."""
         self.steps[i][3] = detail
         await self._edit()
 
     async def done(self, note="", reply_markup=None):
-        """Final edit with optional note and keyboard."""
-        # mark last running as ok
         for s in self.steps:
-            if s[2] == "run":
-                s[2] = "ok"
+            if s[2] == "run": s[2] = "ok"
         await self._edit(note=note, reply_markup=reply_markup, force=True)
 
     def _sp(self):
@@ -104,12 +93,9 @@ class TL:
 
     def render(self, note=""):
         total = time.monotonic() - self.t0
-        h = self.title or "📸 Instagram"
-        lines = [f"{h}  ⏱ <b>{total:.1f}s</b>\n"]
+        lines = [f"{self.title}  ⏱ <b>{total:.1f}s</b>\n"]
         for icon, text, st, detail, ts in self.steps:
-            ela = ""
-            if ts and st == "run":
-                ela = f" <i>({time.monotonic()-ts:.1f}s)</i>"
+            ela = f" <i>({time.monotonic()-ts:.1f}s)</i>" if ts and st == "run" else ""
             if   st == "wait": row = f"○ {icon} {text}"
             elif st == "run":  row = f"{self._sp()} {icon} <b>{text}</b>{ela}"
             elif st == "ok":   row = f"✅ {icon} {text}"
@@ -120,30 +106,22 @@ class TL:
         return "\n".join(lines)
 
     async def _edit(self, note="", reply_markup=None, force=False):
-        """Edit message — rate-limited to avoid flood."""
         async with self._lock:
             now = time.monotonic()
             if not force and (now - self._last_edit) < self._min_interval:
-                return
+                await asyncio.sleep(self._min_interval - (now - self._last_edit))
             try:
                 await self.msg.edit_text(
-                    self.render(note),
-                    parse_mode="HTML",
-                    reply_markup=reply_markup,
-                )
+                    self.render(note), parse_mode="HTML", reply_markup=reply_markup)
                 self._last_edit = time.monotonic()
             except TelegramRetryAfter as e:
                 await asyncio.sleep(e.retry_after + 1)
                 try:
                     await self.msg.edit_text(
-                        self.render(note),
-                        parse_mode="HTML",
-                        reply_markup=reply_markup,
-                    )
+                        self.render(note), parse_mode="HTML", reply_markup=reply_markup)
                     self._last_edit = time.monotonic()
                 except Exception: pass
-            except Exception:
-                pass  # message not modified etc.
+            except Exception: pass
 
 
 # ─── Menus ────────────────────────────────────────────────────────────────────
@@ -171,7 +149,7 @@ def youtube_menu():
     ])
 
 
-# ─── Menu handlers ────────────────────────────────────────────────────────────
+# ─── Menu handlers ───────────────────────────────────────────────────────────
 @router.callback_query(F.data == "menu_social")
 async def menu_social(cb: CallbackQuery, state: FSMContext):
     await state.clear(); await cb.answer()
@@ -185,8 +163,7 @@ async def menu_instagram(cb: CallbackQuery, state: FSMContext):
     from services.ig_account_store import count_accounts
     cnt = count_accounts()
     await cb.message.edit_text(
-        f"📸 <b>خدمات اینستاگرام</b>\n"
-        f"📊 اکانت‌های آماده: <b>{cnt}</b>",
+        f"📸 <b>خدمات اینستاگرام</b>\n📊 اکانت‌ها: <b>{cnt}</b>",
         reply_markup=instagram_menu(), parse_mode="HTML")
 
 @router.callback_query(F.data == "social_youtube")
@@ -201,9 +178,7 @@ async def yt_soon(cb: CallbackQuery):
     await cb.answer("🚧 بزودی!", show_alert=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 1: DOWNLOADER
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ DOWNLOADER ═════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "ig_download")
 async def ig_download_start(cb: CallbackQuery, state: FSMContext):
@@ -226,9 +201,9 @@ async def ig_download_handle(msg: Message, state: FSMContext):
     status = await msg.answer("⏳ در حال بررسی...", parse_mode="HTML")
     tl = TL(status, "📸 <b>Instagram Downloader</b>")
     s0 = tl.add("🔗", "دریافت لینک")
-    s1 = tl.add("🔍", "استخراج مدیا (yt-dlp)")
-    s2 = tl.add("📥", "دانلود به RAM")
-    s3 = tl.add("🚀", "ارسال به تلگرام")
+    s1 = tl.add("🔍", "استخراج مدیا")
+    s2 = tl.add("📥", "دانلود")
+    s3 = tl.add("🚀", "ارسال")
 
     await tl.run(s0, text[:60])
     url = _normalize_url(text)
@@ -238,7 +213,6 @@ async def ig_download_handle(msg: Message, state: FSMContext):
         return
     await tl.ok(s0)
 
-    # Extract
     await tl.run(s1, "در حال استخراج...")
     try:
         medias = await asyncio.wait_for(
@@ -247,23 +221,24 @@ async def ig_download_handle(msg: Message, state: FSMContext):
         if not medias: raise ValueError("مدیایی پیدا نشد")
         await tl.ok(s1, f"{len(medias)} فایل — {medias[0].get('height',0)}p")
     except Exception as e:
-        await tl.err(s1, str(e)[:60])
+        err_msg = str(e)
+        if "not available" in err_msg or "Private" in err_msg:
+            err_msg = "پست پریویت یا دسترس ندارد"
+        await tl.err(s1, err_msg[:60])
         await tl.done(reply_markup=instagram_menu())
         return
 
     total = len(medias)
     for i, media in enumerate(medias, 1):
         lbl = f"{i}/{total}"
-        # Download
-        await tl.run(s2, f"فایل {lbl} — در حال دانلود...")
+        await tl.run(s2, f"فایل {lbl}")
         try:
             data, fname = await asyncio.wait_for(_download_ram(media["url"]), timeout=120)
             await tl.ok(s2, f"{len(data)/1024/1024:.1f} MB")
         except Exception as e:
             await tl.err(s2, str(e)[:50]); continue
 
-        # Send
-        await tl.run(s3, f"فایل {lbl} — در حال ارسال...")
+        await tl.run(s3, f"فایل {lbl}")
         try:
             cap  = f"📸 {lbl}" if total > 1 else "📸 Instagram"
             fobj = BufferedInputFile(data, filename=fname)
@@ -275,16 +250,17 @@ async def ig_download_handle(msg: Message, state: FSMContext):
         except Exception as e:
             await tl.err(s3, str(e)[:50])
 
-    await tl.done(
-        f"✅ تمام! {total} فایل ارسال شد.",
-        reply_markup=instagram_menu())
+    await tl.done(f"✅ تمام! {total} فایل.", reply_markup=instagram_menu())
 
 
 def _ytdlp_extract(url: str) -> list[dict]:
     import yt_dlp
     opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
         "http_headers": {"User-Agent": UA},
+        # Try without login first - works for public posts
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -317,9 +293,7 @@ async def _download_ram(url: str) -> tuple[bytes, str]:
     return r.content, f"ig_media.{ext}"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 2: ACCOUNT MANAGER
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══ ACCOUNT MANAGER ═══════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "ig_create_account")
 async def ig_create_account(cb: CallbackQuery):
@@ -343,16 +317,12 @@ async def ig_create_account(cb: CallbackQuery):
         logger.error("[ig_create] %s", e, exc_info=True)
         result = {"ok": False, "error": str(e)}
 
-    if result["ok"]:
-        acc  = result["account"]
-        note = (
-            f"✅ اکانت ساخته شد!\n"
-            f"👤 <code>{acc['username']}</code>\n"
-            f"📞 <code>{acc['phone']}</code>\n"
-            f"📧 <code>{acc['email']}</code>"
-        )
-    else:
-        note = f"❌ خطا: {result.get('error','?')[:80]}"
+    note = (
+        f"✅ ساخته شد!\n"
+        f"👤 <code>{result['account']['username']}</code>\n"
+        f"📞 <code>{result['account']['phone']}</code>\n"
+        f"📧 <code>{result['account']['email']}</code>"
+    ) if result["ok"] else f"❌ {result.get('error','?')[:80]}"
 
     await tl.done(note, reply_markup=instagram_menu())
 
@@ -364,25 +334,18 @@ async def ig_accounts_list(cb: CallbackQuery):
     accounts = load_accounts()
     if not accounts:
         await cb.message.edit_text(
-            "📊 هیچ اکانتی وجود ندارد.\nابتدا اکانت بسازید.",
+            "📊 هیچ اکانتی وجود ندارد.",
             reply_markup=instagram_menu(), parse_mode="HTML"); return
-
     lines = [f"📊 <b>اکانت‌ها ({len(accounts)})</b>\n"]
-    for a in accounts:
+    for a in accounts[:30]:
         icon = "✅" if a.get("active") else "🚫"
-        lines.append(
-            f"{icon} <code>{a['username']}</code>\n"
-            f"   📞 {a.get('phone','?')} | 📧 {a.get('email','?')[:20]}\n"
-            f"   👥 {a.get('followers',0)} فالور | 📸 {a.get('posts',0)} پست"
-        )
-
-    rows = [
-        [InlineKeyboardButton(text="🧹 حذف بن‌شده‌ها", callback_data="ig_clean_banned")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="social_instagram")],
-    ]
+        lines.append(f"{icon} <code>{a['username']}</code> | 📞 {a.get('phone','?')}")
     await cb.message.edit_text(
         "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧹 حذف بن‌شده‌ها", callback_data="ig_clean_banned")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="social_instagram")],
+        ]),
         parse_mode="HTML")
 
 
@@ -390,46 +353,36 @@ async def ig_accounts_list(cb: CallbackQuery):
 async def ig_clean_banned(cb: CallbackQuery):
     await cb.answer()
     from services.ig_account_store import load_accounts, remove_account
-    from services.ig_account_creator import check_account_status
     accounts = load_accounts()
-    status_msg = await cb.message.edit_text(
-        f"🔍 بررسی {len(accounts)} اکانت...", parse_mode="HTML")
-    removed = 0
-    for acc in accounts:
-        ok = await check_account_status(acc)
-        if not ok:
-            remove_account(acc["username"])
-            removed += 1
-    await status_msg.edit_text(
-        f"✅ تمام شد.\n🗑 {removed} اکانت حذف شد.",
+    removed  = sum(1 for a in accounts if not a.get("active"))
+    for a in [x for x in accounts if not x.get("active")]:
+        remove_account(a["username"])
+    await cb.message.edit_text(
+        f"✅ {removed} اکانت غیرفعال حذف شد.",
         reply_markup=instagram_menu(), parse_mode="HTML")
 
 
-# ─── Follow ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "ig_follow")
 async def ig_follow_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     from services.ig_account_store import count_accounts
-    cnt = count_accounts(active_only=True)
-    if cnt == 0:
+    if count_accounts(active_only=True) == 0:
         await cb.answer("⚠️ هیچ اکانت فعالی ندارید.", show_alert=True); return
     await state.set_state(IGState.follow_target)
     await cb.message.edit_text(
-        f"👥 <b>فالو خودکار</b>\nاکانت‌های فعال: <b>{cnt}</b>\n\n"
-        "ایدی پیج هدف را بفرستید:",
+        "👥 <b>فالو خودکار</b>\n\nایدی پیج هدف را بفرستید:",
         parse_mode="HTML")
 
 @router.message(IGState.follow_target)
 async def ig_follow_target(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
-    target = (msg.text or "").strip().lstrip("@")
-    target = re.sub(r"https?://(?:www\.)?instagram\.com/", "", target).strip("/")
+    target = re.sub(r"https?://(?:www\.)?instagram\.com/", "",
+                    (msg.text or "").strip().lstrip("@")).strip("/")
     await state.update_data(target=target)
     await state.set_state(IGState.follow_count)
     from services.ig_account_store import count_accounts
-    cnt = count_accounts(active_only=True)
     await msg.answer(
-        f"👥 هدف: <code>@{target}</code>\nچند فالو بزنیم؟ (1–{cnt})",
+        f"👥 هدف: <code>@{target}</code>\nچند فالو بزنیم؟ (1–{count_accounts(active_only=True)})",
         parse_mode="HTML")
 
 @router.message(IGState.follow_count)
@@ -440,27 +393,20 @@ async def ig_follow_count(msg: Message, state: FSMContext):
         if count < 1: raise ValueError
     except ValueError:
         await msg.answer("❌ عدد صحیح."); return
-    data   = await state.get_data()
-    target = data["target"]
-    await state.clear()
-
-    status = await msg.answer("⏳ در حال آماده‌سازی...", parse_mode="HTML")
-    tl = TL(status, f"👥 <b>فالو @{target}</b>")
+    data = await state.get_data(); await state.clear()
+    status = await msg.answer("⏳", parse_mode="HTML")
+    tl = TL(status, f"👥 <b>فالو @{data['target']}</b>")
     s0 = tl.add("📊", "انتخاب اکانت‌ها")
     s1 = tl.add("👥", f"فالو با {count} اکانت")
-
     try:
         from services.ig_actions import follow_target
-        result = await follow_target(target, count, tl, s0, s1)
-    except Exception as e:
+        result = await follow_target(data["target"], count, tl, s0, s1)
+    except Exception:
         result = {"ok": 0, "fail": count}
-
-    await tl.done(
-        f"✅ تمام! موفق: {result.get('ok',0)} | ناموفق: {result.get('fail',0)}",
-        reply_markup=instagram_menu())
+    await tl.done(f"✅ موفق: {result.get('ok',0)} | ناموفق: {result.get('fail',0)}",
+                  reply_markup=instagram_menu())
 
 
-# ─── Like ─────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "ig_like")
 async def ig_like_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -481,8 +427,7 @@ async def ig_like_url(msg: Message, state: FSMContext):
     await state.update_data(like_url=url)
     await state.set_state(IGState.like_count)
     from services.ig_account_store import count_accounts
-    cnt = count_accounts(active_only=True)
-    await msg.answer(f"چند لایک بزنیم؟ (1–{cnt})")
+    await msg.answer(f"چند لایک بزنیم؟ (1–{count_accounts(active_only=True)})")
 
 @router.message(IGState.like_count)
 async def ig_like_count(msg: Message, state: FSMContext):
@@ -492,27 +437,21 @@ async def ig_like_count(msg: Message, state: FSMContext):
         if count < 1: raise ValueError
     except ValueError:
         await msg.answer("❌ عدد صحیح."); return
-    data = await state.get_data()
-    url  = data["like_url"]
-    await state.clear()
-
-    status = await msg.answer("⏳ در حال آماده‌سازی...", parse_mode="HTML")
+    data = await state.get_data(); await state.clear()
+    status = await msg.answer("⏳", parse_mode="HTML")
     tl = TL(status, "❤️ <b>لایک خودکار</b>")
     s0 = tl.add("📊", "انتخاب اکانت‌ها")
     s1 = tl.add("❤️", f"لایک با {count} اکانت")
-
     try:
         from services.ig_actions import like_post
-        result = await like_post(url, count, tl, s0, s1)
-    except Exception as e:
+        result = await like_post(data["like_url"], count, tl, s0, s1)
+    except Exception:
         result = {"ok": 0, "fail": count}
-
-    await tl.done(
-        f"✅ تمام! موفق: {result.get('ok',0)} | ناموفق: {result.get('fail',0)}",
-        reply_markup=instagram_menu())
+    await tl.done(f"✅ موفق: {result.get('ok',0)} | ناموفق: {result.get('fail',0)}",
+                  reply_markup=instagram_menu())
 
 
-# ─── URL helpers ──────────────────────────────────────────────────────────────
+# ─── URL helpers ─────────────────────────────────────────────────────────────────────────────────
 def _normalize_url(text: str) -> str | None:
     m = IG_URL_RE.search(text)
     if m: return f"https://www.instagram.com/p/{m.group(1)}/"
