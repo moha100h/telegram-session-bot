@@ -43,24 +43,9 @@ class AdminUser(Base):
     username    = Column(String(255))
     # role: superadmin | admin | moderator | support
     role        = Column(String(50), default="admin")
-    # JSON string: {"manage_users":true, "manage_orders":true, "manage_deposits":true, "view_stats":true}
+    # JSON string: {"manage_users":true,"manage_orders":true,...}
     permissions = Column(Text, default="{}")
     created_at  = Column(DateTime, default=datetime.utcnow)
-
-    def has_perm(self, perm: str) -> bool:
-        import json
-        try:
-            perms = json.loads(self.permissions or "{}")
-            return perms.get(perm, False)
-        except Exception:
-            return False
-
-    def all_perms(self) -> dict:
-        import json
-        try:
-            return json.loads(self.permissions or "{}")
-        except Exception:
-            return {}
 
 
 class Transaction(Base):
@@ -68,13 +53,10 @@ class Transaction(Base):
 
     id             = Column(Integer, primary_key=True, index=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    # type: deposit | order | refund | manual_credit | manual_debit
-    type           = Column(String(50), nullable=False)
+    type           = Column(String(50), nullable=False)   # deposit | order | refund | manual
     amount         = Column(Numeric(10, 4), nullable=False)
-    # status: pending | approved | rejected
-    status         = Column(String(20), default="pending", index=True)
-    # method: usdt_trc20 | usdt_erc20 | ton | trx | manual
-    method         = Column(String(50))
+    status         = Column(String(20), default="pending", index=True)  # pending | approved | rejected
+    method         = Column(String(50))                   # usdt | ton | trx | manual
     tx_hash        = Column(String(255))
     wallet_address = Column(String(255))
     description    = Column(Text)
@@ -92,10 +74,8 @@ class Order(Base):
     service_name = Column(String(255), nullable=False)
     link         = Column(Text, nullable=False)
     quantity     = Column(Integer, nullable=False)
-    # charge: price user paid (with markup)
-    charge       = Column(Numeric(10, 4), nullable=False)
-    # cost: actual cost from SMMPass
-    cost         = Column(Numeric(10, 4))
+    cost_price   = Column(Numeric(10, 4), nullable=False)  # actual SMMPass cost
+    sell_price   = Column(Numeric(10, 4), nullable=False)  # charged to user
     status       = Column(String(20), default="pending", index=True)
     start_count  = Column(Integer)
     remains      = Column(Integer)
@@ -118,13 +98,13 @@ class VerificationCode(Base):
 class AdminSetting(Base):
     __tablename__ = "admin_settings"
 
-    key        = Column(String(100), primary_key=True)
-    value      = Column(Text)
-    description= Column(Text)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    key         = Column(String(100), primary_key=True)
+    value       = Column(Text)
+    description = Column(Text)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # Composite indexes
 Index("ix_tx_user_status",   Transaction.user_id, Transaction.status)
-Index("ix_order_user_status",Order.user_id,       Order.status)
+Index("ix_order_user_status", Order.user_id,       Order.status)
 Index("ix_vc_tg_used",       VerificationCode.telegram_id, VerificationCode.is_used)
