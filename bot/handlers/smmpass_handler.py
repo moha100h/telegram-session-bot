@@ -3,6 +3,7 @@ SMMPass SMM Panel handler.
 Features: balance, services list (paginated + category filter + search),
           all order types, order status (single + multi), refresh.
 """
+import hashlib
 import logging
 import os
 
@@ -19,13 +20,28 @@ router   = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PAGE_SIZE = 8
 
+# category hash map: short_hash -> full_name
+_cat_map: dict[str, str] = {}
+
+
+def _cat_hash(cat: str) -> str:
+    """Return 8-char hash for a category name. Store mapping."""
+    h = hashlib.md5(cat.encode()).hexdigest()[:8]
+    _cat_map[h] = cat
+    return h
+
+
+def _cat_name(h: str) -> str:
+    """Resolve hash back to full category name."""
+    return _cat_map.get(h, h)
+
 
 # ─── FSM ────────────────────────────────────────────────────────────────────
 class SPState(StatesGroup):
     search        = State()
     order_link    = State()
     order_qty     = State()
-    order_extra   = State()   # for comments/usernames/hashtags
+    order_extra   = State()
     order_status  = State()
     multi_status  = State()
     sub_username  = State()
@@ -45,17 +61,17 @@ def _status_icon(status: str) -> str:
 
 def _type_label(t: str) -> str:
     labels = {
-        "default":                  "\U0001f4e6 Default",
-        "package":                  "\U0001f381 Package",
-        "custom comments":          "\U0001f4ac Custom Comments",
-        "mentions with hashtags":   "\U0001f3f7 Mentions+Hashtags",
-        "mentions custom list":     "\U0001f4cb Mentions Custom",
-        "mentions hashtag":         "#\ufe0f\u20e3 Mentions Hashtag",
-        "mentions user followers":  "\U0001f465 Mentions Followers",
-        "mentions media likers":    "\u2764\ufe0f Mentions Likers",
-        "custom comments package":  "\U0001f4ac\U0001f381 Comments Pkg",
-        "comment likes":            "\U0001f44d Comment Likes",
-        "subscriptions":            "\U0001f504 Subscription",
+        "default":                "\U0001f4e6 Default",
+        "package":                "\U0001f381 Package",
+        "custom comments":        "\U0001f4ac Custom Comments",
+        "mentions with hashtags": "\U0001f3f7 Mentions+Hashtags",
+        "mentions custom list":   "\U0001f4cb Mentions Custom",
+        "mentions hashtag":       "#\ufe0f\u20e3 Mentions Hashtag",
+        "mentions user followers":"\U0001f465 Mentions Followers",
+        "mentions media likers":  "\u2764\ufe0f Mentions Likers",
+        "custom comments package":"\U0001f4ac\U0001f381 Comments Pkg",
+        "comment likes":          "\U0001f44d Comment Likes",
+        "subscriptions":          "\U0001f504 Subscription",
     }
     return labels.get(t.lower(), f"\U0001f539 {t.title()}")
 
@@ -80,17 +96,18 @@ def _svcs_kb(services: list, page: int) -> InlineKeyboardMarkup:
     end   = start + PAGE_SIZE
     rows  = []
     for s in services[start:end]:
+        label = f"\U0001f539 [{s['service']}] {s['name'][:24]} | ${s['rate']}"
         rows.append([InlineKeyboardButton(
-            text=f"\U0001f539 [{s['service']}] {s['name'][:26]} | ${s['rate']}",
+            text=label[:60],
             callback_data=f"sp_svc_{s['service']}"
         )])
     nav = []
     pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     if page > 0:
-        nav.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"sp_services_{page-1}"))
+        nav.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"sp_pg_{page-1}"))
     nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="sp_noop"))
     if end < total:
-        nav.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"sp_services_{page+1}"))
+        nav.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"sp_pg_{page+1}"))
     if nav: rows.append(nav)
     rows.append([InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -139,7 +156,7 @@ async def sp_balance(cb: CallbackQuery):
             f"\U0001f4b5 \u0645\u0648\u062c\u0648\u062f\u06cc: <b>{bal}</b> {d['currency']}",
             reply_markup=sp_main_menu(), parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"\u274c <code>{str(e)[:120]}</code>",
+        await msg.edit_text(f"\u274c <code>{str(e)[:200]}</code>",
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
@@ -149,7 +166,7 @@ async def sp_refresh_svcs(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("\u26d4\ufe0f", show_alert=True); return
     await cb.answer("\U0001f504 \u062f\u0631 \u062d\u0627\u0644 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc...")
-    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627 \u0627\u0632 \u0633\u0627\u06cc\u062a...", parse_mode="HTML")
+    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627...", parse_mode="HTML")
     try:
         from services.smmpass import get_services
         svcs = await get_services(force=True)
@@ -157,60 +174,85 @@ async def sp_refresh_svcs(cb: CallbackQuery):
             f"\u2705 <b>{len(svcs)}</b> \u0633\u0631\u0648\u06cc\u0633 \u0628\u0647\u200c\u0631\u0648\u0632 \u0634\u062f.",
             reply_markup=sp_main_menu(), parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"\u274c <code>{str(e)[:120]}</code>",
+        await msg.edit_text(f"\u274c <code>{str(e)[:200]}</code>",
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("sp_services_"))
-async def sp_services(cb: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "sp_services_0")
+async def sp_services_first(cb: CallbackQuery, state: FSMContext):
+    await _show_services(cb, state, 0)
+
+
+@router.callback_query(F.data.startswith("sp_pg_"))
+async def sp_services_page(cb: CallbackQuery, state: FSMContext):
+    page = int(cb.data.split("_")[-1])
+    await _show_services(cb, state, page)
+
+
+async def _show_services(cb: CallbackQuery, state: FSMContext, page: int):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("\u26d4\ufe0f", show_alert=True); return
     await cb.answer()
-    page = int(cb.data.split("_")[-1])
     data = await state.get_data()
-    cat  = data.get("sp_cat", "")
-    msg  = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
+    cat_hash = data.get("sp_cat_h", "")
+    cat_name = _cat_name(cat_hash) if cat_hash else ""
+
+    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
     try:
         from services.smmpass import get_services
         all_svcs = await get_services()
         if not all_svcs:
-            await msg.edit_text("\u274c \u0633\u0631\u0648\u06cc\u0633\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f. \u0627\u0628\u062a\u062f\u0627 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u06a9\u0646\u06cc\u062f.",
+            await msg.edit_text("\u274c \u0633\u0631\u0648\u06cc\u0633\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.",
                                 reply_markup=sp_main_menu(), parse_mode="HTML"); return
-        svcs = [s for s in all_svcs if not cat or s["category"] == cat]
+
+        # Pre-hash all categories
         cats = list(dict.fromkeys(s["category"] for s in all_svcs))
+        for c in cats:
+            _cat_hash(c)  # populate map
+
+        svcs = [s for s in all_svcs if not cat_name or s["category"] == cat_name]
+
+        # Category filter buttons (2 per row, max 5 rows = 10 cats shown)
         cat_rows = []
-        for i in range(0, len(cats), 2):
+        for i in range(0, min(len(cats), 10), 2):
             row = []
             for c in cats[i:i+2]:
-                active = "\u2705 " if c == cat else ""
+                h      = _cat_hash(c)
+                active = "\u2705 " if c == cat_name else ""
+                label  = f"{active}{c[:18]}"
                 row.append(InlineKeyboardButton(
-                    text=f"{active}{c[:22]}",
-                    callback_data=f"sp_cat_{c[:30]}"
+                    text=label,
+                    callback_data=f"sp_cat_{h}"   # always <= 16 chars
                 ))
             cat_rows.append(row)
-        if cat:
+        if cat_name:
             cat_rows.append([InlineKeyboardButton(
-                text="\u274c \u062d\u0630\u0641 \u0641\u06cc\u0644\u062a\u0631", callback_data="sp_cat_CLEAR")])
+                text="\u274c \u062d\u0630\u0641 \u0641\u06cc\u0644\u062a\u0631",
+                callback_data="sp_cat_CLEAR"
+            )])
+
         svc_kb   = _svcs_kb(svcs, page)
         all_rows = cat_rows + svc_kb.inline_keyboard
-        header   = f"\U0001f4cc \u062f\u0633\u062a\u0647: <b>{cat}</b>\n" if cat else ""
+        header   = f"\U0001f4cc \u062f\u0633\u062a\u0647: <b>{cat_name[:40]}</b>\n" if cat_name else ""
         await msg.edit_text(
             f"\U0001f4ca <b>\u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627 ({len(svcs)} \u0645\u0648\u0631\u062f)</b>\n{header}"
-            "\u0631\u0648\u06cc \u0647\u0631 \u0633\u0631\u0648\u06cc\u0633 \u0628\u0632\u0646\u06cc\u062f:",
+            "\u0631\u0648\u06cc \u0633\u0631\u0648\u06cc\u0633 \u0628\u0632\u0646\u06cc\u062f:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=all_rows),
             parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"\u274c <code>{str(e)[:120]}</code>",
+        await msg.edit_text(f"\u274c <code>{str(e)[:200]}</code>",
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("sp_cat_"))
 async def sp_cat(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    cat = cb.data[7:]
-    await state.update_data(sp_cat="" if cat == "CLEAR" else cat)
-    cb.data = "sp_services_0"
-    await sp_services(cb, state)
+    h = cb.data[7:]
+    if h == "CLEAR":
+        await state.update_data(sp_cat_h="")
+    else:
+        await state.update_data(sp_cat_h=h)
+    await _show_services(cb, state, 0)
 
 
 @router.callback_query(F.data.startswith("sp_svc_"))
@@ -228,7 +270,7 @@ async def sp_svc_detail(cb: CallbackQuery, state: FSMContext):
         drip = "\u2705" if svc["dripfeed"] else "\u274c"
         text = (
             f"\U0001f539 <b>{svc['name']}</b>\n\n"
-            f"\U0001f3f7 \u062f\u0633\u062a\u0647: <code>{svc['category']}</code>\n"
+            f"\U0001f3f7 \u062f\u0633\u062a\u0647: <code>{svc['category'][:60]}</code>\n"
             f"\U0001f522 \u0634\u0646\u0627\u0633\u0647: <code>{svc['service']}</code>\n"
             f"\U0001f4b0 \u0646\u0631\u062e: <b>${svc['rate']}</b> / 1000\n"
             f"\U0001f4c9 \u062d\u062f\u0627\u0642\u0644: <b>{svc['min']}</b>\n"
@@ -286,7 +328,7 @@ async def sp_search_handle(msg: Message, state: FSMContext):
             f"\U0001f50d '<b>{q}</b>': <b>{len(results)}</b> \u0645\u0648\u0631\u062f{suffix}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     except Exception as e:
-        await msg.answer(f"\u274c <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
@@ -319,19 +361,17 @@ async def sp_order_start(cb: CallbackQuery, state: FSMContext):
             await cb.answer("\u274c \u0633\u0631\u0648\u06cc\u0633 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.", show_alert=True); return
         await state.update_data(sp_svc=svc, sp_svc_id=svc_id)
         t = svc["type"]
-
         if t == "subscriptions":
             await state.set_state(SPState.sub_username)
             await cb.message.edit_text(
-                f"\U0001f504 <b>Subscription [{svc_id}] {svc['name']}</b>\n\n"
-                f"\U0001f4b0 \u0646\u0631\u062e: ${svc['rate']} / 1000\n"
-                f"\U0001f4c9 Min: {svc['min']} | \U0001f4c8 Max: {svc['max']}\n\n"
+                f"\U0001f504 <b>Subscription [{svc_id}]</b>\n\n"
+                f"\U0001f4b0 \u0646\u0631\u062e: ${svc['rate']} / 1000\n\n"
                 "\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:",
                 parse_mode="HTML")
         elif t == "package":
             await state.set_state(SPState.order_link)
             await cb.message.edit_text(
-                f"\U0001f381 <b>Package [{svc_id}] {svc['name']}</b>\n\n"
+                f"\U0001f381 <b>Package [{svc_id}]</b>\n\n"
                 "\U0001f517 \u0644\u06cc\u0646\u06a9 \u0635\u0641\u062d\u0647 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:",
                 parse_mode="HTML")
         elif t in ("custom comments", "custom comments package"):
@@ -348,7 +388,7 @@ async def sp_order_start(cb: CallbackQuery, state: FSMContext):
                 f"\U0001f4cb <b>Mentions Custom [{svc_id}]</b>\n\n"
                 "\U0001f517 \u0644\u06cc\u0646\u06a9 \u0635\u0641\u062d\u0647 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:",
                 parse_mode="HTML")
-        elif t in ("mentions with hashtags",):
+        elif t == "mentions with hashtags":
             await state.set_state(SPState.order_link)
             await state.update_data(sp_next="mentions_hashtags")
             await cb.message.edit_text(
@@ -390,9 +430,8 @@ async def sp_order_link(msg: Message, state: FSMContext):
         await msg.answer("\u274c \u0644\u06cc\u0646\u06a9 \u0645\u0639\u062a\u0628\u0631 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f."); return
     data = await state.get_data()
     await state.update_data(sp_link=link)
-    nxt  = data.get("sp_next", "default")
-    svc  = data.get("sp_svc", {})
-
+    nxt = data.get("sp_next", "default")
+    svc = data.get("sp_svc", {})
     if nxt == "comments":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="comments")
@@ -400,18 +439,10 @@ async def sp_order_link(msg: Message, state: FSMContext):
     elif nxt == "usernames":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="usernames")
-        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f (\u0647\u0631 \u062e\u0637 \u06cc\u06a9 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645):")
-    elif nxt == "mentions_hashtags":
+        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f (\u0647\u0631 \u062e\u0637 \u06cc\u06a9):")
+    elif nxt in ("mentions_hashtags", "hashtag", "username_qty"):
         await state.set_state(SPState.order_qty)
-        await state.update_data(sp_extra_type="mentions_hashtags")
-        await msg.answer(f"\U0001f522 \u062a\u0639\u062f\u0627\u062f (\u062d\u062f\u0627\u0642\u0644 {svc.get('min','?')} | \u062d\u062f\u0627\u06a9\u062b\u0631 {svc.get('max','?')}):")
-    elif nxt == "hashtag":
-        await state.set_state(SPState.order_qty)
-        await state.update_data(sp_extra_type="hashtag")
-        await msg.answer(f"\U0001f522 \u062a\u0639\u062f\u0627\u062f (\u062d\u062f\u0627\u0642\u0644 {svc.get('min','?')} | \u062d\u062f\u0627\u06a9\u062b\u0631 {svc.get('max','?')}):")
-    elif nxt == "username_qty":
-        await state.set_state(SPState.order_qty)
-        await state.update_data(sp_extra_type="username_qty")
+        await state.update_data(sp_extra_type=nxt)
         await msg.answer(f"\U0001f522 \u062a\u0639\u062f\u0627\u062f (\u062d\u062f\u0627\u0642\u0644 {svc.get('min','?')} | \u062d\u062f\u0627\u06a9\u062b\u0631 {svc.get('max','?')}):")
     elif svc.get("type") == "package":
         await state.clear()
@@ -430,14 +461,12 @@ async def sp_order_qty(msg: Message, state: FSMContext):
     except ValueError:
         await msg.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f."); return
     data = await state.get_data()
-    svc  = data.get("sp_svc", {})
     et   = data.get("sp_extra_type", "default")
     await state.update_data(sp_qty=qty)
-
     if et == "mentions_hashtags":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="mentions_hashtags_2")
-        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 (\u0647\u0631 \u062e\u0637 \u06cc\u06a9):")
+        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 (\u0647\u0631 \u062e\u0637) | \u0647\u0634\u062a\u06af\u200c\u0647\u0627 (\u0647\u0631 \u062e\u0637)\n\u0628\u0627 | \u062c\u062f\u0627 \u06a9\u0646\u06cc\u062f:\n<i>user1\nuser2|#tag1\n#tag2</i>", parse_mode="HTML")
     elif et == "hashtag":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="hashtag_2")
@@ -448,20 +477,19 @@ async def sp_order_qty(msg: Message, state: FSMContext):
         await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:")
     else:
         await state.clear()
-        await _place_order_default(msg, data["sp_svc_id"], data["sp_link"], qty, svc)
+        await _place_order_default(msg, data["sp_svc_id"], data["sp_link"], qty, data.get("sp_svc", {}))
 
 
 @router.message(SPState.order_extra)
 async def sp_order_extra(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
-    extra = (msg.text or "").strip()
-    data  = await state.get_data()
-    et    = data.get("sp_extra_type", "")
+    extra  = (msg.text or "").strip()
+    data   = await state.get_data()
+    et     = data.get("sp_extra_type", "")
     svc_id = data["sp_svc_id"]
     link   = data.get("sp_link", "")
     qty    = data.get("sp_qty", 0)
     await state.clear()
-
     try:
         from services import smmpass as sp
         if et == "comments":
@@ -469,8 +497,7 @@ async def sp_order_extra(msg: Message, state: FSMContext):
         elif et == "usernames":
             result = await sp.add_order_mentions_custom(svc_id, link, extra)
         elif et == "mentions_hashtags_2":
-            # extra = usernames, need hashtags next — simplified: split by |
-            parts = extra.split("|")
+            parts     = extra.split("|")
             usernames = parts[0].strip()
             hashtags  = parts[1].strip() if len(parts) > 1 else ""
             result = await sp.add_order_mentions_hashtags(svc_id, link, qty, usernames, hashtags)
@@ -479,18 +506,18 @@ async def sp_order_extra(msg: Message, state: FSMContext):
         elif et == "username_qty_2":
             result = await sp.add_order_mentions_followers(svc_id, link, qty, extra)
         else:
-            await msg.answer("\u274c \u0646\u0648\u0639 \u0633\u0641\u0627\u0631\u0634 \u0646\u0627\u0645\u0634\u062e\u0635 \u0627\u0633\u062a.",
+            await msg.answer("\u274c \u0646\u0648\u0639 \u0633\u0641\u0627\u0631\u0634 \u0646\u0627\u0645\u0634\u062e\u0635.",
                              reply_markup=sp_main_menu(), parse_mode="HTML"); return
         await _order_success(msg, result["order"])
     except Exception as e:
-        await msg.answer(f"\u274c \u062e\u0637\u0627: <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
 async def _place_order_default(msg, svc_id, link, qty, svc):
     try:
         from services.smmpass import add_order_default
-        try: mn, mx = int(float(svc.get("min",1))), int(float(svc.get("max",999999)))
+        try: mn, mx = int(float(svc.get("min", 1))), int(float(svc.get("max", 999999)))
         except: mn, mx = 1, 999999
         if qty < mn or qty > mx:
             await msg.answer(f"\u274c \u062a\u0639\u062f\u0627\u062f \u0628\u0627\u06cc\u062f \u0628\u06cc\u0646 <b>{mn}</b> \u0648 <b>{mx}</b> \u0628\u0627\u0634\u062f.",
@@ -498,7 +525,7 @@ async def _place_order_default(msg, svc_id, link, qty, svc):
         result = await add_order_default(svc_id, link, qty)
         await _order_success(msg, result["order"])
     except Exception as e:
-        await msg.answer(f"\u274c \u062e\u0637\u0627: <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
@@ -508,7 +535,7 @@ async def _place_order_package(msg, svc_id, link):
         result = await add_order_package(svc_id, link)
         await _order_success(msg, result["order"])
     except Exception as e:
-        await msg.answer(f"\u274c \u062e\u0637\u0627: <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
@@ -518,7 +545,7 @@ async def _order_success(msg, order_id: int):
         f"\U0001f4e6 \u0634\u0646\u0627\u0633\u0647: <code>{order_id}</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634 #{order_id}",
+                text=f"\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a #{order_id}",
                 callback_data=f"sp_check_{order_id}"
             )],
             [InlineKeyboardButton(text="\U0001f519 \u0645\u0646\u0648", callback_data="sp_menu")],
@@ -541,7 +568,7 @@ async def sp_sub_username(msg: Message, state: FSMContext):
 async def sp_sub_min(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
     try: mn = int(msg.text.strip())
-    except: await msg.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f."); return
+    except: await msg.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d."); return
     await state.update_data(sp_sub_min=mn)
     await state.set_state(SPState.sub_max)
     data = await state.get_data()
@@ -553,7 +580,7 @@ async def sp_sub_min(msg: Message, state: FSMContext):
 async def sp_sub_max(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
     try: mx = int(msg.text.strip())
-    except: await msg.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f."); return
+    except: await msg.answer("\u274c \u0639\u062f\u062f \u0635\u062d\u06cc\u062d."); return
     data = await state.get_data()
     await state.clear()
     try:
@@ -564,11 +591,11 @@ async def sp_sub_max(msg: Message, state: FSMContext):
         )
         await _order_success(msg, result["order"])
     except Exception as e:
-        await msg.answer(f"\u274c \u062e\u0637\u0627: <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
-# ─── Order Status ────────────────────────────────────────────────────────────
+# ─── Order Status ───────────────────────────────────────────────────────────
 @router.callback_query(F.data == "sp_order_status")
 async def sp_status_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
@@ -576,8 +603,7 @@ async def sp_status_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(SPState.order_status)
     await cb.message.edit_text(
-        "\U0001f4e6 <b>\u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634</b>\n\n"
-        "\u0634\u0646\u0627\u0633\u0647 \u0633\u0641\u0627\u0631\u0634 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:",
+        "\U0001f4e6 <b>\u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634</b>\n\nID \u0633\u0641\u0627\u0631\u0634 \u0631\u0627 \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f:",
         parse_mode="HTML")
 
 
@@ -585,7 +611,7 @@ async def sp_status_start(cb: CallbackQuery, state: FSMContext):
 async def sp_status_handle(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
     try: oid = int((msg.text or "").strip())
-    except: await msg.answer("\u274c \u0634\u0646\u0627\u0633\u0647 \u0628\u0627\u06cc\u062f \u0639\u062f\u062f \u0628\u0627\u0634\u062f."); return
+    except: await msg.answer("\u274c ID \u0639\u062f\u062f\u06cc \u0648\u0627\u0631\u062f \u06a9\u0646\u06cc\u062f."); return
     await state.clear()
     await _show_status(msg, oid)
 
@@ -619,7 +645,7 @@ async def _show_status(target, oid: int, edit: bool = False):
         if edit: await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
         else:    await target.answer(text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
-        err = f"\u274c <code>{str(e)[:120]}</code>"
+        err = f"\u274c <code>{str(e)[:200]}</code>"
         if edit: await target.edit_text(err, reply_markup=sp_main_menu(), parse_mode="HTML")
         else:    await target.answer(err, reply_markup=sp_main_menu(), parse_mode="HTML")
 
@@ -633,7 +659,7 @@ async def sp_multi_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(SPState.multi_status)
     await cb.message.edit_text(
         "\U0001f4e6\U0001f4e6 <b>\u0648\u0636\u0639\u06cc\u062a \u0686\u0646\u062f \u0633\u0641\u0627\u0631\u0634</b>\n\n"
-        "\u0634\u0646\u0627\u0633\u0647\u200c\u0647\u0627 \u0631\u0627 \u0628\u0627 \u0648\u06cc\u0631\u06af\u0648\u0644 \u062c\u062f\u0627 \u06a9\u0646\u06cc\u062f:\n"
+        "ID\u0647\u0627 \u0631\u0627 \u0628\u0627 \u0648\u06cc\u0631\u06af\u0648\u0644 \u062c\u062f\u0627 \u06a9\u0646\u06cc\u062f:\n"
         "<i>\u0645\u062b\u0627\u0644: 12,13,14</i>",
         parse_mode="HTML")
 
@@ -645,9 +671,9 @@ async def sp_multi_handle(msg: Message, state: FSMContext):
     try:
         ids = [int(x.strip()) for x in (msg.text or "").split(",") if x.strip().isdigit()]
         if not ids:
-            await msg.answer("\u274c \u0634\u0646\u0627\u0633\u0647\u200c\u0647\u0627 \u0635\u062d\u06cc\u062d \u0646\u06cc\u0633\u062a."); return
+            await msg.answer("\u274c ID\u0647\u0627 \u0635\u062d\u06cc\u062d \u0646\u06cc\u0633\u062a."); return
         from services.smmpass import get_orders_status
-        raw = await get_orders_status(ids)
+        raw   = await get_orders_status(ids)
         lines = []
         for oid, d in raw.items():
             if isinstance(d, dict):
@@ -659,8 +685,8 @@ async def sp_multi_handle(msg: Message, state: FSMContext):
             else:
                 lines.append(f"\u274c <b>#{oid}</b>: {d}")
         await msg.answer(
-            "\U0001f4ca <b>\u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634\u200c\u0647\u0627</b>\n\n" + "\n".join(lines),
+            "\U0001f4ca <b>\u0646\u062a\u0627\u06cc\u062c</b>\n\n" + "\n".join(lines),
             reply_markup=sp_main_menu(), parse_mode="HTML")
     except Exception as e:
-        await msg.answer(f"\u274c <code>{str(e)[:120]}</code>",
+        await msg.answer(f"\u274c <code>{str(e)[:200]}</code>",
                          reply_markup=sp_main_menu(), parse_mode="HTML")
