@@ -1,7 +1,6 @@
 """
 SMMPass SMM Panel handler.
-Features: balance, services list (paginated + category filter + search),
-          all order types, order status (single + multi), refresh.
+Navigation: Categories -> Services -> Detail -> Order
 """
 import hashlib
 import logging
@@ -20,20 +19,54 @@ router   = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PAGE_SIZE = 8
 
-# category hash map: short_hash -> full_name
-_cat_map: dict[str, str] = {}
+# hash maps
+_cat_map: dict[str, str] = {}   # hash -> full name
 
 
 def _cat_hash(cat: str) -> str:
-    """Return 8-char hash for a category name. Store mapping."""
     h = hashlib.md5(cat.encode()).hexdigest()[:8]
     _cat_map[h] = cat
     return h
 
-
 def _cat_name(h: str) -> str:
-    """Resolve hash back to full category name."""
     return _cat_map.get(h, h)
+
+
+# ─── Category emoji map ───────────────────────────────────────────────────────────────
+CAT_ICONS = [
+    ("telegram",   "\U0001f4e8"),
+    ("instagram",  "\U0001f4f8"),
+    ("youtube",    "\U0001f3a5"),
+    ("tiktok",     "\U0001f3b5"),
+    ("twitter",    "\U0001f426"),
+    ("facebook",   "\U0001f1eb"),
+    ("spotify",    "\U0001f3b6"),
+    ("linkedin",   "\U0001f4bc"),
+    ("discord",    "\U0001f3ae"),
+    ("twitch",     "\U0001f3ae"),
+    ("snapchat",   "\U0001f47b"),
+    ("pinterest",  "\U0001f4cc"),
+    ("soundcloud", "\U0001f3a7"),
+    ("reddit",     "\U0001f916"),
+    ("view",       "\U0001f440"),
+    ("member",     "\U0001f465"),
+    ("follower",   "\U0001f465"),
+    ("like",       "\u2764\ufe0f"),
+    ("comment",    "\U0001f4ac"),
+    ("reaction",   "\U0001f44d"),
+    ("share",      "\U0001f501"),
+    ("vote",       "\U0001f5f3\ufe0f"),
+    ("watch",      "\u23f1\ufe0f"),
+    ("stream",     "\U0001f4fa"),
+    ("boost",      "\U0001f680"),
+]
+
+def _cat_icon(cat: str) -> str:
+    cl = cat.lower()
+    for kw, icon in CAT_ICONS:
+        if kw in cl:
+            return icon
+    return "\U0001f539"
 
 
 # ─── FSM ────────────────────────────────────────────────────────────────────
@@ -76,41 +109,18 @@ def _type_label(t: str) -> str:
     return labels.get(t.lower(), f"\U0001f539 {t.title()}")
 
 
-# ─── Keyboards ──────────────────────────────────────────────────────────────
+# ─── Main menu ──────────────────────────────────────────────────────────────
 def sp_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="\U0001f4b0 \u0645\u0648\u062c\u0648\u062f\u06cc \u062d\u0633\u0627\u0628",        callback_data="sp_balance")],
-        [InlineKeyboardButton(text="\U0001f4cb \u0644\u06cc\u0633\u062a \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",       callback_data="sp_services_0")],
-        [InlineKeyboardButton(text="\U0001f504 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",  callback_data="sp_refresh_svcs")],
-        [InlineKeyboardButton(text="\U0001f50d \u062c\u0633\u062a\u062c\u0648 \u062f\u0631 \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",   callback_data="sp_search")],
-        [InlineKeyboardButton(text="\u2795 \u062b\u0628\u062a \u0633\u0641\u0627\u0631\u0634 \u062c\u062f\u06cc\u062f",      callback_data="sp_new_order")],
-        [InlineKeyboardButton(text="\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634",         callback_data="sp_order_status")],
-        [InlineKeyboardButton(text="\U0001f4e6\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a \u0686\u0646\u062f \u0633\u0641\u0627\u0631\u0634",  callback_data="sp_multi_status")],
-        [InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a",               callback_data="menu_main")],
+        [InlineKeyboardButton(text="\U0001f4b0 \u0645\u0648\u062c\u0648\u062f\u06cc \u062d\u0633\u0627\u0628",           callback_data="sp_balance")],
+        [InlineKeyboardButton(text="\U0001f4cb \u062f\u0633\u062a\u0647\u200c\u0628\u0646\u062f\u06cc \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",      callback_data="sp_cats_0")],
+        [InlineKeyboardButton(text="\U0001f504 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",   callback_data="sp_refresh_svcs")],
+        [InlineKeyboardButton(text="\U0001f50d \u062c\u0633\u062a\u062c\u0648 \u062f\u0631 \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627",      callback_data="sp_search")],
+        [InlineKeyboardButton(text="\u2795 \u062b\u0628\u062a \u0633\u0641\u0627\u0631\u0634 \u062c\u062f\u06cc\u062f",         callback_data="sp_new_order")],
+        [InlineKeyboardButton(text="\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a \u0633\u0641\u0627\u0631\u0634",            callback_data="sp_order_status")],
+        [InlineKeyboardButton(text="\U0001f4e6\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a \u0686\u0646\u062f \u0633\u0641\u0627\u0631\u0634",     callback_data="sp_multi_status")],
+        [InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a",                  callback_data="menu_main")],
     ])
-
-
-def _svcs_kb(services: list, page: int) -> InlineKeyboardMarkup:
-    total = len(services)
-    start = page * PAGE_SIZE
-    end   = start + PAGE_SIZE
-    rows  = []
-    for s in services[start:end]:
-        label = f"\U0001f539 [{s['service']}] {s['name'][:24]} | ${s['rate']}"
-        rows.append([InlineKeyboardButton(
-            text=label[:60],
-            callback_data=f"sp_svc_{s['service']}"
-        )])
-    nav = []
-    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"sp_pg_{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="sp_noop"))
-    if end < total:
-        nav.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"sp_pg_{page+1}"))
-    if nav: rows.append(nav)
-    rows.append([InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ─── Entry ──────────────────────────────────────────────────────────────────
@@ -145,7 +155,7 @@ async def sp_balance(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("\u26d4\ufe0f", show_alert=True); return
     await cb.answer()
-    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a \u0645\u0648\u062c\u0648\u062f\u06cc...", parse_mode="HTML")
+    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
     try:
         from services.smmpass import get_balance
         d = await get_balance()
@@ -160,7 +170,7 @@ async def sp_balance(cb: CallbackQuery):
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
-# ─── Services ────────────────────────────────────────────────────────────────
+# ─── Refresh ────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "sp_refresh_svcs")
 async def sp_refresh_svcs(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
@@ -178,83 +188,121 @@ async def sp_refresh_svcs(cb: CallbackQuery):
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "sp_services_0")
-async def sp_services_first(cb: CallbackQuery, state: FSMContext):
-    await _show_services(cb, state, 0)
-
-
-@router.callback_query(F.data.startswith("sp_pg_"))
-async def sp_services_page(cb: CallbackQuery, state: FSMContext):
-    page = int(cb.data.split("_")[-1])
-    await _show_services(cb, state, page)
-
-
-async def _show_services(cb: CallbackQuery, state: FSMContext, page: int):
+# ─── Categories list ───────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("sp_cats_"))
+async def sp_cats(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("\u26d4\ufe0f", show_alert=True); return
     await cb.answer()
-    data = await state.get_data()
-    cat_hash = data.get("sp_cat_h", "")
-    cat_name = _cat_name(cat_hash) if cat_hash else ""
-
-    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
+    page = int(cb.data.split("_")[-1])
+    msg  = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
     try:
         from services.smmpass import get_services
         all_svcs = await get_services()
         if not all_svcs:
-            await msg.edit_text("\u274c \u0633\u0631\u0648\u06cc\u0633\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.",
+            await msg.edit_text("\u274c \u0633\u0631\u0648\u06cc\u0633\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f. \u0627\u0628\u062a\u062f\u0627 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u06a9\u0646\u06cc\u062f.",
                                 reply_markup=sp_main_menu(), parse_mode="HTML"); return
 
-        # Pre-hash all categories
-        cats = list(dict.fromkeys(s["category"] for s in all_svcs))
+        # Build unique categories with count
+        cat_counts: dict[str, int] = {}
+        for s in all_svcs:
+            cat_counts[s["category"]] = cat_counts.get(s["category"], 0) + 1
+        cats = list(cat_counts.keys())
+
+        # Pre-hash all
         for c in cats:
-            _cat_hash(c)  # populate map
+            _cat_hash(c)
 
-        svcs = [s for s in all_svcs if not cat_name or s["category"] == cat_name]
+        CAT_PAGE = 10
+        total_pages = max(1, (len(cats) + CAT_PAGE - 1) // CAT_PAGE)
+        start = page * CAT_PAGE
+        end   = start + CAT_PAGE
+        page_cats = cats[start:end]
 
-        # Category filter buttons (2 per row, max 5 rows = 10 cats shown)
-        cat_rows = []
-        for i in range(0, min(len(cats), 10), 2):
-            row = []
-            for c in cats[i:i+2]:
-                h      = _cat_hash(c)
-                active = "\u2705 " if c == cat_name else ""
-                label  = f"{active}{c[:18]}"
-                row.append(InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"sp_cat_{h}"   # always <= 16 chars
-                ))
-            cat_rows.append(row)
-        if cat_name:
-            cat_rows.append([InlineKeyboardButton(
-                text="\u274c \u062d\u0630\u0641 \u0641\u06cc\u0644\u062a\u0631",
-                callback_data="sp_cat_CLEAR"
+        rows = []
+        for c in page_cats:
+            h     = _cat_hash(c)
+            icon  = _cat_icon(c)
+            count = cat_counts[c]
+            label = f"{icon} {c[:28]} ({count})"
+            rows.append([InlineKeyboardButton(
+                text=label[:50],
+                callback_data=f"sp_cat_{h}_0"
             )])
 
-        svc_kb   = _svcs_kb(svcs, page)
-        all_rows = cat_rows + svc_kb.inline_keyboard
-        header   = f"\U0001f4cc \u062f\u0633\u062a\u0647: <b>{cat_name[:40]}</b>\n" if cat_name else ""
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"sp_cats_{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="sp_noop"))
+        if end < len(cats):
+            nav.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"sp_cats_{page+1}"))
+        if nav: rows.append(nav)
+        rows.append([InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_menu")])
+
         await msg.edit_text(
-            f"\U0001f4ca <b>\u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627 ({len(svcs)} \u0645\u0648\u0631\u062f)</b>\n{header}"
-            "\u0631\u0648\u06cc \u0633\u0631\u0648\u06cc\u0633 \u0628\u0632\u0646\u06cc\u062f:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=all_rows),
+            f"\U0001f4cb <b>\u062f\u0633\u062a\u0647\u200c\u0628\u0646\u062f\u06cc\u200c\u0647\u0627</b> ({len(cats)} \u062f\u0633\u062a\u0647)\n"
+            "\u06cc\u06a9 \u062f\u0633\u062a\u0647 \u0631\u0627 \u0627\u0646\u062a\u062e\u0627\u0628 \u06a9\u0646\u06cc\u062f:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
             parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"\u274c <code>{str(e)[:200]}</code>",
                             reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
+# ─── Services in category ─────────────────────────────────────────────────────────
+# callback: sp_cat_{hash}_{page}
 @router.callback_query(F.data.startswith("sp_cat_"))
-async def sp_cat(cb: CallbackQuery, state: FSMContext):
+async def sp_cat_services(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("\u26d4\ufe0f", show_alert=True); return
     await cb.answer()
-    h = cb.data[7:]
-    if h == "CLEAR":
-        await state.update_data(sp_cat_h="")
-    else:
-        await state.update_data(sp_cat_h=h)
-    await _show_services(cb, state, 0)
+    parts    = cb.data.split("_")   # ["sp","cat",hash,page]
+    cat_h    = parts[2]
+    page     = int(parts[3]) if len(parts) > 3 else 0
+    cat_full = _cat_name(cat_h)
+
+    msg = await cb.message.edit_text("\u23f3 \u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a...", parse_mode="HTML")
+    try:
+        from services.smmpass import get_services
+        all_svcs = await get_services()
+        svcs     = [s for s in all_svcs if s["category"] == cat_full]
+        total    = len(svcs)
+        start    = page * PAGE_SIZE
+        end      = start + PAGE_SIZE
+        pages    = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+        rows = []
+        for s in svcs[start:end]:
+            drip  = " \U0001f4c6" if s["dripfeed"] else ""
+            label = f"[{s['service']}] {s['name'][:28]}{drip} | ${s['rate']}"
+            rows.append([InlineKeyboardButton(
+                text=label[:60],
+                callback_data=f"sp_svc_{s['service']}"
+            )])
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="\u2b05\ufe0f", callback_data=f"sp_cat_{cat_h}_{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="sp_noop"))
+        if end < total:
+            nav.append(InlineKeyboardButton(text="\u27a1\ufe0f", callback_data=f"sp_cat_{cat_h}_{page+1}"))
+        if nav: rows.append(nav)
+        rows.append([InlineKeyboardButton(text="\U0001f519 \u062f\u0633\u062a\u0647\u200c\u0628\u0646\u062f\u06cc\u200c\u0647\u0627", callback_data="sp_cats_0")])
+        rows.append([InlineKeyboardButton(text="\U0001f3e0 \u0645\u0646\u0648", callback_data="sp_menu")])
+
+        icon = _cat_icon(cat_full)
+        await msg.edit_text(
+            f"{icon} <b>{cat_full[:50]}</b>\n"
+            f"<i>{total} \u0633\u0631\u0648\u06cc\u0633</i> | \U0001f4c6 = Drip-feed\n"
+            "\u0631\u0648\u06cc \u0633\u0631\u0648\u06cc\u0633 \u0628\u0632\u0646\u06cc\u062f:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"\u274c <code>{str(e)[:200]}</code>",
+                            reply_markup=sp_main_menu(), parse_mode="HTML")
 
 
+# ─── Service detail ─────────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("sp_svc_"))
 async def sp_svc_detail(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
@@ -268,22 +316,29 @@ async def sp_svc_detail(cb: CallbackQuery, state: FSMContext):
         if not svc:
             await cb.answer("\u274c \u0633\u0631\u0648\u06cc\u0633 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.", show_alert=True); return
         drip = "\u2705" if svc["dripfeed"] else "\u274c"
+        try: cost_100 = f"${float(svc['rate'])*100/1000:.4f}"
+        except: cost_100 = "?"
         text = (
-            f"\U0001f539 <b>{svc['name']}</b>\n\n"
-            f"\U0001f3f7 \u062f\u0633\u062a\u0647: <code>{svc['category'][:60]}</code>\n"
-            f"\U0001f522 \u0634\u0646\u0627\u0633\u0647: <code>{svc['service']}</code>\n"
+            f"{_cat_icon(svc['category'])} <b>{svc['name']}</b>\n\n"
+            f"\U0001f3f7 <i>{svc['category'][:55]}</i>\n"
+            f"\U0001f522 ID: <code>{svc['service']}</code>\n"
             f"\U0001f4b0 \u0646\u0631\u062e: <b>${svc['rate']}</b> / 1000\n"
-            f"\U0001f4c9 \u062d\u062f\u0627\u0642\u0644: <b>{svc['min']}</b>\n"
+            f"\U0001f4b3 \u0647\u0632\u06cc\u0646\u0647 100 \u062a\u0627: <b>{cost_100}</b>\n"
+            f"\U0001f4c9 \u062d\u062f\u0627\u0642\u0644: <b>{svc['min']}</b> | "
             f"\U0001f4c8 \u062d\u062f\u0627\u06a9\u062b\u0631: <b>{svc['max']}</b>\n"
             f"\U0001f4cc \u0646\u0648\u0639: <code>{_type_label(svc['type'])}</code>\n"
-            f"\U0001f504 Drip Feed: {drip}"
+            f"\U0001f504 Drip-feed: {drip}"
         )
+        # find category hash for back button
+        cat_h = _cat_hash(svc["category"])
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"\u2795 \u062b\u0628\u062a \u0633\u0641\u0627\u0631\u0634 [{svc_id}]",
                 callback_data=f"sp_order_{svc_id}"
             )],
-            [InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_services_0")],
+            [InlineKeyboardButton(text="\U0001f519 \u0628\u0631\u06af\u0634\u062a \u0628\u0647 \u062f\u0633\u062a\u0647",
+                                  callback_data=f"sp_cat_{cat_h}_0")],
+            [InlineKeyboardButton(text="\U0001f3e0 \u0645\u0646\u0648", callback_data="sp_menu")],
         ])
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
@@ -300,7 +355,7 @@ async def sp_search_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         "\U0001f50d <b>\u062c\u0633\u062a\u062c\u0648 \u062f\u0631 \u0633\u0631\u0648\u06cc\u0633\u200c\u0647\u0627</b>\n\n"
         "\u0646\u0627\u0645 \u0633\u0631\u0648\u06cc\u0633 \u06cc\u0627 \u062f\u0633\u062a\u0647 \u0631\u0627 \u0628\u0646\u0648\u06cc\u0633\u06cc\u062f:\n"
-        "<i>\u0645\u062b\u0627\u0644: telegram, views, members</i>",
+        "<i>\u0645\u062b\u0627\u0644: telegram views, instagram followers, 5</i>",
         parse_mode="HTML")
 
 
@@ -319,7 +374,7 @@ async def sp_search_handle(msg: Message, state: FSMContext):
             await msg.answer(f"\u274c \u0646\u062a\u06cc\u062c\u0647\u200c\u0627\u06cc \u0628\u0631\u0627\u06cc '<b>{q}</b>' \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.",
                              reply_markup=sp_main_menu(), parse_mode="HTML"); return
         rows = [[InlineKeyboardButton(
-            text=f"\U0001f539 [{s['service']}] {s['name'][:26]} | ${s['rate']}",
+            text=f"{_cat_icon(s['category'])} [{s['service']}] {s['name'][:26]} | ${s['rate']}",
             callback_data=f"sp_svc_{s['service']}"
         )] for s in results[:20]]
         rows.append([InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_menu")])
@@ -409,11 +464,11 @@ async def sp_order_start(cb: CallbackQuery, state: FSMContext):
                 f"\U0001f465 <b>{_type_label(t)} [{svc_id}]</b>\n\n"
                 "\U0001f517 \u0644\u06cc\u0646\u06a9 \u0635\u0641\u062d\u0647 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:",
                 parse_mode="HTML")
-        else:  # default
+        else:
             await state.set_state(SPState.order_link)
             await state.update_data(sp_next="default")
             await cb.message.edit_text(
-                f"\U0001f4e6 <b>Default [{svc_id}] {svc['name']}</b>\n\n"
+                f"\U0001f4e6 <b>[{svc_id}] {svc['name']}</b>\n\n"
                 f"\U0001f4b0 \u0646\u0631\u062e: ${svc['rate']} / 1000\n"
                 f"\U0001f4c9 \u062d\u062f\u0627\u0642\u0644: {svc['min']} | \U0001f4c8 \u062d\u062f\u0627\u06a9\u062b\u0631: {svc['max']}\n\n"
                 "\U0001f517 \u0644\u06cc\u0646\u06a9 \u0635\u0641\u062d\u0647 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a\u06cc\u062f:",
@@ -466,7 +521,7 @@ async def sp_order_qty(msg: Message, state: FSMContext):
     if et == "mentions_hashtags":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="mentions_hashtags_2")
-        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 (\u0647\u0631 \u062e\u0637) | \u0647\u0634\u062a\u06af\u200c\u0647\u0627 (\u0647\u0631 \u062e\u0637)\n\u0628\u0627 | \u062c\u062f\u0627 \u06a9\u0646\u06cc\u062f:\n<i>user1\nuser2|#tag1\n#tag2</i>", parse_mode="HTML")
+        await msg.answer("\U0001f464 \u06cc\u0648\u0632\u0631\u0646\u06cc\u0645\u200c\u0647\u0627 | \u0647\u0634\u062a\u06af\u200c\u0647\u0627 (\u0628\u0627 | \u062c\u062f\u0627 \u06a9\u0646\u06cc\u062f):\n<i>user1\nuser2|#tag1\n#tag2</i>", parse_mode="HTML")
     elif et == "hashtag":
         await state.set_state(SPState.order_extra)
         await state.update_data(sp_extra_type="hashtag_2")
@@ -548,7 +603,7 @@ async def _order_success(msg, order_id: int):
                 text=f"\U0001f4e6 \u0648\u0636\u0639\u06cc\u062a #{order_id}",
                 callback_data=f"sp_check_{order_id}"
             )],
-            [InlineKeyboardButton(text="\U0001f519 \u0645\u0646\u0648", callback_data="sp_menu")],
+            [InlineKeyboardButton(text="\U0001f3e0 \u0645\u0646\u0648", callback_data="sp_menu")],
         ]),
         parse_mode="HTML")
 
@@ -640,7 +695,7 @@ async def _show_status(target, oid: int, edit: bool = False):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="\U0001f504 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc",
                                   callback_data=f"sp_check_{oid}")],
-            [InlineKeyboardButton(text="\U0001f519 \u0628\u0627\u0632\u06af\u0634\u062a", callback_data="sp_menu")],
+            [InlineKeyboardButton(text="\U0001f3e0 \u0645\u0646\u0648", callback_data="sp_menu")],
         ])
         if edit: await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
         else:    await target.answer(text, reply_markup=kb, parse_mode="HTML")
