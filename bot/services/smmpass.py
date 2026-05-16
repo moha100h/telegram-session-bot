@@ -36,10 +36,20 @@ def _f(v) -> float:
 # ─── Core POST ──────────────────────────────────────────────────────────────────
 async def _post(data: dict) -> object:
     payload = {"key": API_KEY, **data}
-    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
-        r = await c.post(API_URL, data=payload)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; TelegramBot/1.0)",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as c:
+        r = await c.post(API_URL, data=payload, headers=headers)
+        if r.status_code == 403:
+            raise ValueError("API دسترسی ندارد (403). با سایت SMMPass تماس بگیرید.")
         r.raise_for_status()
-        return r.json()
+        try:
+            return r.json()
+        except Exception:
+            raise ValueError(f"Response not JSON: {r.text[:200]}")
 
 
 # ─── Normalize service ───────────────────────────────────────────────────────────
@@ -65,8 +75,8 @@ async def get_balance() -> dict:
     raw = await _post({"action": "balance"})
     if not isinstance(raw, dict):
         raise ValueError(f"Bad response: {raw}")
-    if raw.get("status") not in ("success", None) and "balance" not in raw:
-        raise ValueError(_s(raw.get("error", raw)))
+    if raw.get("status") == "error":
+        raise ValueError(_s(raw.get("message", raw)))
     return {
         "balance":  _s(raw.get("balance", "0")),
         "currency": _s(raw.get("currency", "USD")),
@@ -88,40 +98,49 @@ async def get_services(force: bool = False) -> list:
     return services
 
 
+def _handle_order(raw) -> dict:
+    if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
+    if "error" in raw: raise ValueError(_s(raw["error"]))
+    if raw.get("status") == "error": raise ValueError(_s(raw.get("message", str(raw))))
+    oid = _i(raw.get("order", 0))
+    if oid == 0: raise ValueError(f"No order ID: {raw}")
+    return {"order": oid}
+
+
 async def add_order_default(service_id: int, link: str, quantity: int,
                             runs: int = None, interval: int = None) -> dict:
     data = {"action": "add", "service": service_id, "link": link, "quantity": quantity}
     if runs:     data["runs"]     = runs
     if interval: data["interval"] = interval
-    return await _handle_order(await _post(data))
+    return _handle_order(await _post(data))
 
 
 async def add_order_package(service_id: int, link: str) -> dict:
-    return await _handle_order(await _post(
+    return _handle_order(await _post(
         {"action": "add", "service": service_id, "link": link}))
 
 
 async def add_order_custom_comments(service_id: int, link: str, comments: str) -> dict:
-    return await _handle_order(await _post(
+    return _handle_order(await _post(
         {"action": "add", "service": service_id, "link": link, "comments": comments}))
 
 
 async def add_order_mentions_hashtags(service_id: int, link: str, quantity: int,
                                       usernames: str, hashtags: str) -> dict:
-    return await _handle_order(await _post({
+    return _handle_order(await _post({
         "action": "add", "service": service_id, "link": link,
         "quantity": quantity, "usernames": usernames, "hashtags": hashtags,
     }))
 
 
 async def add_order_mentions_custom(service_id: int, link: str, usernames: str) -> dict:
-    return await _handle_order(await _post(
+    return _handle_order(await _post(
         {"action": "add", "service": service_id, "link": link, "usernames": usernames}))
 
 
 async def add_order_mentions_hashtag(service_id: int, link: str, quantity: int,
                                      hashtag: str) -> dict:
-    return await _handle_order(await _post({
+    return _handle_order(await _post({
         "action": "add", "service": service_id, "link": link,
         "quantity": quantity, "hashtag": hashtag,
     }))
@@ -129,7 +148,7 @@ async def add_order_mentions_hashtag(service_id: int, link: str, quantity: int,
 
 async def add_order_mentions_followers(service_id: int, link: str, quantity: int,
                                        username: str) -> dict:
-    return await _handle_order(await _post({
+    return _handle_order(await _post({
         "action": "add", "service": service_id, "link": link,
         "quantity": quantity, "username": username,
     }))
@@ -137,7 +156,7 @@ async def add_order_mentions_followers(service_id: int, link: str, quantity: int
 
 async def add_order_comment_likes(service_id: int, link: str, quantity: int,
                                   username: str) -> dict:
-    return await _handle_order(await _post({
+    return _handle_order(await _post({
         "action": "add", "service": service_id, "link": link,
         "quantity": quantity, "username": username,
     }))
@@ -151,13 +170,14 @@ async def add_order_subscription(service_id: int, username: str,
         "username": username, "min": min_qty, "max": max_qty, "delay": delay,
     }
     if expiry: data["expiry"] = expiry
-    return await _handle_order(await _post(data))
+    return _handle_order(await _post(data))
 
 
 async def get_order_status(order_id: int) -> dict:
     raw = await _post({"action": "status", "order": order_id})
     if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
     if "error" in raw: raise ValueError(_s(raw["error"]))
+    if raw.get("status") == "error": raise ValueError(_s(raw.get("message", str(raw))))
     return {
         "order":       _s(raw.get("order", order_id)),
         "status":      _s(raw.get("status", "unknown")),
@@ -172,15 +192,6 @@ async def get_orders_status(order_ids: list[int]) -> dict:
     raw = await _post({"action": "status", "orders": ids})
     if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
     return raw
-
-
-def _handle_order(raw) -> dict:
-    if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
-    if "error" in raw: raise ValueError(_s(raw["error"]))
-    if raw.get("status") == "error": raise ValueError(_s(raw.get("message", raw)))
-    oid = _i(raw.get("order", 0))
-    if oid == 0: raise ValueError(f"No order ID: {raw}")
-    return {"order": oid}
 
 
 def clear_cache():
