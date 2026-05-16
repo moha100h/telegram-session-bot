@@ -1,110 +1,112 @@
 """
-Database models for SMM Panel.
+Database models.
 """
+import json
 from datetime import datetime
 from sqlalchemy import (
-    Column, BigInteger, Integer, String, Text, Boolean,
-    DateTime, Numeric, ForeignKey, Index
+    BigInteger, Boolean, Column, DateTime, Float,
+    Integer, String, Text, ForeignKey, Index
 )
-from sqlalchemy.orm import relationship, declarative_base
-
-Base = declarative_base()
+from sqlalchemy.orm import relationship
+from db.database import Base
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id            = Column(Integer, primary_key=True, index=True)
+    id            = Column(Integer, primary_key=True, autoincrement=True)
     telegram_id   = Column(BigInteger, unique=True, nullable=False, index=True)
-    username      = Column(String(255))
-    first_name    = Column(String(255))
-    last_name     = Column(String(255))
-    phone         = Column(String(30))          # verified phone
-    balance       = Column(Numeric(10, 4), default=0)
-    is_banned     = Column(Boolean, default=False, index=True)
-    referral_code = Column(String(20), unique=True)
-    referral_count= Column(Integer, default=0)
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    username      = Column(String(64), nullable=True)
+    first_name    = Column(String(64), nullable=True)
+    last_name     = Column(String(64), nullable=True)
+    phone         = Column(String(20), nullable=True)
+    balance       = Column(Float, default=0.0, nullable=False)
+    is_banned     = Column(Boolean, default=False, nullable=False)
+    referral_code = Column(String(16), unique=True, nullable=True)
+    referral_count= Column(Integer, default=0, nullable=False)
+    referred_by   = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    transactions  = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
-    orders        = relationship("Order",       back_populates="user", cascade="all, delete-orphan")
+    orders       = relationship("Order",       back_populates="user", lazy="select")
+    transactions = relationship("Transaction", back_populates="user", lazy="select")
 
     def display_name(self) -> str:
         parts = [p for p in [self.first_name, self.last_name] if p]
-        return " ".join(parts) or self.username or str(self.telegram_id)
-
-
-class AdminUser(Base):
-    __tablename__ = "admin_users"
-
-    id          = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
-    username    = Column(String(255))
-    # role: superadmin | admin | moderator | support
-    role        = Column(String(50), default="admin")
-    # JSON string: {"manage_users":true,"manage_orders":true,...}
-    permissions = Column(Text, default="{}")
-    created_at  = Column(DateTime, default=datetime.utcnow)
-
-
-class Transaction(Base):
-    __tablename__ = "transactions"
-
-    id             = Column(Integer, primary_key=True, index=True)
-    user_id        = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    type           = Column(String(50), nullable=False)   # deposit | order | refund | manual
-    amount         = Column(Numeric(10, 4), nullable=False)
-    status         = Column(String(20), default="pending", index=True)  # pending | approved | rejected
-    method         = Column(String(50))                   # usdt | ton | trx | manual
-    tx_hash        = Column(String(255))
-    wallet_address = Column(String(255))
-    description    = Column(Text)
-    created_at     = Column(DateTime, default=datetime.utcnow)
-
-    user = relationship("User", back_populates="transactions")
+        return " ".join(parts) if parts else (self.username or f"User{self.telegram_id}")
 
 
 class Order(Base):
     __tablename__ = "orders"
 
-    id           = Column(Integer, primary_key=True, index=True)
+    id           = Column(Integer, primary_key=True, autoincrement=True)
     user_id      = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     service_id   = Column(Integer, nullable=False)
-    service_name = Column(String(255), nullable=False)
+    service_name = Column(String(255), nullable=True)
     link         = Column(Text, nullable=False)
     quantity     = Column(Integer, nullable=False)
-    cost_price   = Column(Numeric(10, 4), nullable=False)  # actual SMMPass cost
-    sell_price   = Column(Numeric(10, 4), nullable=False)  # charged to user
-    status       = Column(String(20), default="pending", index=True)
-    start_count  = Column(Integer)
-    remains      = Column(Integer)
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    cost_price   = Column(Float, nullable=False)
+    sell_price   = Column(Float, nullable=False)
+    status       = Column(String(32), default="pending", nullable=False, index=True)
+    start_count  = Column(Integer, nullable=True)
+    remains      = Column(Integer, nullable=True)
+    created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="orders")
 
 
-class VerificationCode(Base):
-    __tablename__ = "verification_codes"
+class Transaction(Base):
+    __tablename__ = "transactions"
 
-    id          = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, nullable=False, index=True)
-    code        = Column(String(10), nullable=False)
-    expires_at  = Column(DateTime, nullable=False)
-    is_used     = Column(Boolean, default=False)
-    created_at  = Column(DateTime, default=datetime.utcnow)
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    user_id        = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type           = Column(String(32), nullable=False)  # deposit, order, refund, manual
+    amount         = Column(Float, nullable=False)
+    status         = Column(String(32), default="pending", nullable=False)
+    method         = Column(String(32), nullable=True)   # usdt, ton, trx, manual
+    tx_hash        = Column(String(128), nullable=True)
+    wallet_address = Column(String(128), nullable=True)
+    description    = Column(Text, nullable=True)
+    created_at     = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="transactions")
+
+
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    username    = Column(String(64), nullable=True)
+    role        = Column(String(32), default="admin", nullable=False)  # admin, moderator, support
+    permissions = Column(Text, default="{}", nullable=False)  # JSON
+    created_at  = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def all_perms(self) -> dict:
+        try:
+            return json.loads(self.permissions or "{}")
+        except Exception:
+            return {}
+
+    def has_perm(self, perm: str) -> bool:
+        return self.all_perms().get(perm, False)
 
 
 class AdminSetting(Base):
     __tablename__ = "admin_settings"
 
-    key         = Column(String(100), primary_key=True)
-    value       = Column(Text)
-    description = Column(Text)
-    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    key   = Column(String(64), unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=True)
 
 
-# Composite indexes
-Index("ix_tx_user_status",   Transaction.user_id, Transaction.status)
-Index("ix_order_user_status", Order.user_id,       Order.status)
-Index("ix_vc_tg_used",       VerificationCode.telegram_id, VerificationCode.is_used)
+class VerificationCode(Base):
+    __tablename__ = "verification_codes"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
+    code        = Column(String(8), nullable=False)
+    is_used     = Column(Boolean, default=False, nullable=False)
+    expires_at  = Column(DateTime, nullable=False)
+    created_at  = Column(DateTime, default=datetime.utcnow, nullable=False)
