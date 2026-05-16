@@ -63,12 +63,10 @@ async def main():
     # ─── New SMM Panel Routers ────────────────────────────────────────────────────────────────────
     from handlers.user_handler     import router as user_router
     from handlers.admin_handler    import router as admin_router
-    from handlers.user_smm_handler import router as user_smm_router
     from handlers.smmpass_handler  import router as smmpass_router
 
     dp.include_router(user_router)
     dp.include_router(admin_router)
-    dp.include_router(user_smm_router)
     dp.include_router(smmpass_router)
 
     # ─── Old Session Manager Routers ────────────────────────────────────────────────────────────────
