@@ -1,22 +1,19 @@
 """
 Instagram actions: follow, like.
-Each account uses its own proxy and session.
-Parallel execution with rate limiting.
+All TL calls are async.
 """
 import asyncio
 import logging
 import random
-import time
 
 logger = logging.getLogger("ig_actions")
 
-MAX_CONCURRENT = 5
-DELAY_MIN      = 3   # seconds between actions per account
-DELAY_MAX      = 8
+MAX_CONCURRENT = 3
+DELAY_MIN      = 4
+DELAY_MAX      = 9
 
 
 async def _get_client(account: dict):
-    """Load instagrapi client for account."""
     import os
     from instagrapi import Client
     cl = Client()
@@ -33,13 +30,11 @@ async def _get_client(account: dict):
 
 async def follow_target(target: str, count: int, tl, s0, s1) -> dict:
     from services.ig_account_store import get_active_accounts, mark_banned
-
     accounts = get_active_accounts(limit=count)
-    tl.ok(s0, f"{len(accounts)} اکانت انتخاب شد")
-    tl.run(s1, f"0/{len(accounts)} فالو")
+    await tl.ok(s0, f"{len(accounts)} اکانت")
+    await tl.run(s1, f"0/{len(accounts)}")
 
-    ok   = 0
-    fail = 0
+    ok = 0; fail = 0
     lock = asyncio.Lock()
     sem  = asyncio.Semaphore(MAX_CONCURRENT)
 
@@ -49,17 +44,14 @@ async def follow_target(target: str, count: int, tl, s0, s1) -> dict:
             try:
                 cl   = await _get_client(acc)
                 loop = asyncio.get_event_loop()
-                uid  = await loop.run_in_executor(
-                    None, lambda: cl.user_id_from_username(target))
-                await loop.run_in_executor(
-                    None, lambda: cl.user_follow(uid))
+                uid  = await loop.run_in_executor(None, lambda: cl.user_id_from_username(target))
+                await loop.run_in_executor(None, lambda: cl.user_follow(uid))
                 async with lock:
                     ok += 1
-                    tl.steps[s1][3] = f"{ok}/{len(accounts)} فالو شد"
+                    await tl.update(s1, f"{ok}/{len(accounts)} فالو شد")
                 await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
             except Exception as e:
-                err = str(e).lower()
-                if any(x in err for x in ["banned", "challenge", "disabled"]):
+                if any(x in str(e).lower() for x in ["banned","challenge","disabled"]):
                     mark_banned(acc["username"])
                 async with lock:
                     fail += 1
@@ -70,21 +62,17 @@ async def follow_target(target: str, count: int, tl, s0, s1) -> dict:
 
 
 async def like_post(url: str, count: int, tl, s0, s1) -> dict:
-    from services.ig_account_store import get_active_accounts, mark_banned
     import re
-
-    # Extract shortcode
+    from services.ig_account_store import get_active_accounts, mark_banned
     m = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_\-]+)", url)
-    if not m:
-        return {"ok": 0, "fail": count}
+    if not m: return {"ok": 0, "fail": count}
     shortcode = m.group(1)
 
     accounts = get_active_accounts(limit=count)
-    tl.ok(s0, f"{len(accounts)} اکانت انتخاب شد")
-    tl.run(s1, f"0/{len(accounts)} لایک")
+    await tl.ok(s0, f"{len(accounts)} اکانت")
+    await tl.run(s1, f"0/{len(accounts)}")
 
-    ok   = 0
-    fail = 0
+    ok = 0; fail = 0
     lock = asyncio.Lock()
     sem  = asyncio.Semaphore(MAX_CONCURRENT)
 
@@ -96,15 +84,13 @@ async def like_post(url: str, count: int, tl, s0, s1) -> dict:
                 loop = asyncio.get_event_loop()
                 mid  = await loop.run_in_executor(
                     None, lambda: cl.media_id(cl.media_pk_from_code(shortcode)))
-                await loop.run_in_executor(
-                    None, lambda: cl.media_like(mid))
+                await loop.run_in_executor(None, lambda: cl.media_like(mid))
                 async with lock:
                     ok += 1
-                    tl.steps[s1][3] = f"{ok}/{len(accounts)} لایک شد"
+                    await tl.update(s1, f"{ok}/{len(accounts)} لایک شد")
                 await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
             except Exception as e:
-                err = str(e).lower()
-                if any(x in err for x in ["banned", "challenge", "disabled"]):
+                if any(x in str(e).lower() for x in ["banned","challenge","disabled"]):
                     mark_banned(acc["username"])
                 async with lock:
                     fail += 1
