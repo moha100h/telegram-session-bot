@@ -1,22 +1,20 @@
 """
 Instagram & YouTube section.
 Downloader: yt-dlp with in-memory buffer — zero disk storage.
-Supports: Reels, Posts, IGTV, Carousels
+Live timeline progress shown to user.
 """
 import asyncio
 import io
 import logging
 import os
 import re
-import tempfile
-import shutil
+import time
 
 from aiogram import Router, F
 from aiogram.types import (
     CallbackQuery, Message,
     InlineKeyboardMarkup, InlineKeyboardButton,
     BufferedInputFile,
-    URLInputFile,
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -25,17 +23,117 @@ logger   = logging.getLogger("social")
 router   = Router()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-IG_URL_RE = re.compile(
+IG_URL_RE   = re.compile(
     r"https?://(?:www\.)?instagram\.com/"
     r"(?:p|reel|tv|reels)/([A-Za-z0-9_\-]+)"
 )
 IG_SHORT_RE = re.compile(r"https?://instagr\.am/p/([A-Za-z0-9_\-]+)")
+
+SPINNER = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
 
 
 # ─── FSM ──────────────────────────────────────────────────────────────────
 
 class IGState(StatesGroup):
     waiting = State()
+
+
+# ─── Timeline tracker ───────────────────────────────────────────────────────────
+
+class Timeline:
+    """
+    Tracks steps with timestamps and renders a live Telegram message.
+    Each step: (emoji, label, status: pending|active|done|error, ts)
+    """
+    STEPS = [
+        ("1", "🔗", "دریافت لینک"),
+        ("2", "🔍", "استخراج اطلاعات مدیا"),
+        ("3", "📦", "دانلود فایل"),
+        ("4", "🚀", "ارسال به تلگرام"),
+    ]
+
+    def __init__(self):
+        self.started_at  = time.monotonic()
+        self._spin_i     = 0
+        # step_id -> {status, ts, detail}
+        self._steps: dict = {
+            s[0]: {"emoji": s[1], "label": s[2],
+                   "status": "pending", "ts": None, "detail": ""}
+            for s in self.STEPS
+        }
+        self._current = None
+
+    def start(self, step_id: str, detail: str = ""):
+        """Mark step as active."""
+        if self._current and self._current != step_id:
+            self._steps[self._current]["status"] = "done"
+        self._steps[step_id]["status"] = "active"
+        self._steps[step_id]["ts"]     = time.monotonic()
+        self._steps[step_id]["detail"] = detail
+        self._current = step_id
+
+    def done(self, step_id: str, detail: str = ""):
+        self._steps[step_id]["status"] = "done"
+        if detail:
+            self._steps[step_id]["detail"] = detail
+
+    def error(self, step_id: str, detail: str = ""):
+        self._steps[step_id]["status"] = "error"
+        if detail:
+            self._steps[step_id]["detail"] = detail
+        self._current = None
+
+    def _spin(self) -> str:
+        self._spin_i = (self._spin_i + 1) % len(SPINNER)
+        return SPINNER[self._spin_i]
+
+    def _elapsed(self, ts) -> str:
+        if ts is None:
+            return ""
+        s = time.monotonic() - ts
+        return f" ({s:.1f}s)"
+
+    def _total(self) -> str:
+        s = time.monotonic() - self.started_at
+        return f"{s:.1f}s"
+
+    def render(self, extra: str = "") -> str:
+        lines = ["📸 <b>دانلود اینستاگرام</b>\n"]
+
+        for sid, step in self._steps.items():
+            st     = step["status"]
+            emoji  = step["emoji"]
+            label  = step["label"]
+            detail = step["detail"]
+
+            if st == "pending":
+                icon = "○"
+                line = f"{icon} {emoji} {label}"
+            elif st == "active":
+                sp   = self._spin()
+                ela  = self._elapsed(step["ts"])
+                line = f"{sp} {emoji} <b>{label}</b>{ela}"
+                if detail:
+                    line += f"\n    └ {detail}"
+            elif st == "done":
+                ela  = self._elapsed(step["ts"])
+                line = f"✅ {emoji} {label}"
+                if detail:
+                    line += f" — {detail}"
+            elif st == "error":
+                line = f"❌ {emoji} {label}"
+                if detail:
+                    line += f"\n    └ {detail}"
+            else:
+                line = f"○ {emoji} {label}"
+
+            lines.append(line)
+
+        if extra:
+            lines.append(f"\n{extra}")
+
+        lines.append(f"\n⏱ زمان کل: <b>{self._total()}</b>")
+        return "\n".join(lines)
 
 
 # ─── Menus ──────────────────────────────────────────────────────────────────
@@ -82,7 +180,7 @@ async def menu_instagram(cb: CallbackQuery, state: FSMContext):
         "📸 <b>خدمات اینستاگرام</b>\n\n"
         "• پست، ریل، IGTV و کاروسل\n"
         "• بدون ذخیره روی سرور\n"
-        "⚠️ استوری پشتیبانی نمی‌شود (نیاز به لاگین دارد)",
+        "⚠️ استوری پشتیبانی نمی‌شود",
         reply_markup=instagram_menu(), parse_mode="HTML",
     )
 
@@ -126,188 +224,212 @@ async def ig_download_handle(msg: Message, state: FSMContext):
     text = (msg.text or "").strip()
     await state.clear()
 
-    # Normalize URL
+    # Step 1: validate URL
+    tl  = Timeline()
+    tl.start("1", text[:60])
+
     url = _normalize_url(text)
     if not url:
+        tl.error("1", "لینک نامعتبر")
         await msg.answer(
-            "❌ لینک معتبر نیست.\n"
-            "مثال: <code>https://www.instagram.com/reel/ABC123/</code>",
+            tl.render(),
             parse_mode="HTML", reply_markup=instagram_menu(),
         )
         return
 
-    # Check if story
     if "/stories/" in url:
+        tl.error("1", "استوری پشتیبانی نمی‌شود")
         await msg.answer(
-            "⚠️ استوری پشتیبانی نمی‌شود.\n"
-            "فقط پست، ریل و IGTV قابل دانلود هستند.",
-            reply_markup=instagram_menu(),
+            tl.render("⚠️ فقط پست، ریل و IGTV قابل دانلود هستند."),
+            parse_mode="HTML", reply_markup=instagram_menu(),
         )
         return
 
-    status = await msg.answer("⏳ در حال دانلود...")
+    tl.done("1", url.split("/")[-2] or "ok")
+
+    # Send initial status message
+    tl.start("2")
+    status = await msg.answer(tl.render(), parse_mode="HTML")
+
+    # Live updater task
+    stop_live = asyncio.Event()
+
+    async def live_update():
+        while not stop_live.is_set():
+            try:
+                await status.edit_text(tl.render(), parse_mode="HTML")
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+
+    live_task = asyncio.create_task(live_update())
 
     try:
-        medias = await asyncio.wait_for(
-            _download_with_ytdlp(url),
-            timeout=120,
-        )
-    except asyncio.TimeoutError:
-        await status.edit_text("❌ تایماوت — لینک را دوباره امتحان کنید.",
-                               reply_markup=instagram_menu())
-        return
-    except Exception as e:
-        logger.error("[ig] download error: %s", e)
-        await status.edit_text(
-            f"❌ خطا: {str(e)[:120]}",
-            reply_markup=instagram_menu(),
-        )
-        return
-
-    if not medias:
-        await status.edit_text(
-            "❌ مدیایی پیدا نشد.\n"
-            "شاید پست خصوصی است یا لینک نامعتبر.",
-            reply_markup=instagram_menu(),
-        )
-        return
-
-    total = len(medias)
-    await status.edit_text(f"⏳ در حال ارسال {total} فایل...")
-
-    sent = 0
-    for i, media in enumerate(medias, 1):
+        # Step 2: extract info with yt-dlp
         try:
-            await _send_from_buffer(msg, media, i, total)
-            sent += 1
+            medias = await asyncio.wait_for(_extract_info(url), timeout=30)
+            if not medias:
+                raise ValueError("مدیایی پیدا نشد")
+            tl.done("2", f"{len(medias)} فایل")
+        except asyncio.TimeoutError:
+            tl.error("2", "تایماوت")
+            stop_live.set()
+            await status.edit_text(
+                tl.render("❌ تایماوت. دوباره امتحان کنید."),
+                parse_mode="HTML", reply_markup=instagram_menu(),
+            )
+            return
         except Exception as e:
-            logger.error("[ig] send %d: %s", i, e)
-            await msg.answer(f"⚠️ فایل {i} ارسال نشد: {str(e)[:80]}")
+            tl.error("2", str(e)[:60])
+            stop_live.set()
+            await status.edit_text(
+                tl.render(), parse_mode="HTML", reply_markup=instagram_menu()
+            )
+            return
+
+        total = len(medias)
+
+        # Step 3+4: download + send each file
+        for i, media in enumerate(medias, 1):
+            # Step 3: download
+            tl.start("3", f"فایل {i}/{total}")
+            try:
+                data, filename = await asyncio.wait_for(
+                    _download_to_ram(media["url"]), timeout=90
+                )
+                size_mb = len(data) / 1024 / 1024
+                tl.done("3", f"{size_mb:.1f} MB")
+            except asyncio.TimeoutError:
+                tl.error("3", f"تایماوت — فایل {i}")
+                continue
+            except Exception as e:
+                tl.error("3", str(e)[:50])
+                continue
+
+            # Step 4: send to Telegram
+            tl.start("4", f"فایل {i}/{total}")
+            try:
+                caption  = f"📸 {i}/{total}" if total > 1 else "📸 Instagram"
+                file_obj = BufferedInputFile(data, filename=filename)
+                if media["type"] == "video":
+                    await msg.answer_video(file_obj, caption=caption,
+                                           supports_streaming=True)
+                else:
+                    await msg.answer_photo(file_obj, caption=caption)
+                tl.done("4", f"فایل {i}/{total} ارسال شد")
+            except Exception as e:
+                tl.error("4", str(e)[:50])
+
+            # Reset steps 3+4 for next file
+            if i < total:
+                tl._steps["3"]["status"] = "pending"
+                tl._steps["3"]["detail"] = ""
+                tl._steps["4"]["status"] = "pending"
+                tl._steps["4"]["detail"] = ""
+
+    finally:
+        stop_live.set()
+        await asyncio.sleep(0.1)
 
     await status.edit_text(
-        f"✅ {sent}/{total} فایل ارسال شد.",
+        tl.render(f"✅ تمام شد! {total} فایل ارسال شد."),
+        parse_mode="HTML",
         reply_markup=instagram_menu(),
     )
 
 
-# ─── yt-dlp downloader (no disk) ─────────────────────────────────────────────────────
+# ─── yt-dlp: extract info only (no download) ─────────────────────────────────────────
 
-async def _download_with_ytdlp(url: str) -> list[dict]:
-    """
-    Use yt-dlp to extract media URLs, then download into RAM.
-    No temp files on disk.
-    """
+async def _extract_info(url: str) -> list[dict]:
     import yt_dlp
 
-    ydl_opts = {
-        "quiet":           True,
-        "no_warnings":     True,
-        "extract_flat":    False,
-        "skip_download":   True,   # just get info first
+    opts = {
+        "quiet":       True,
+        "no_warnings": True,
+        "skip_download": True,
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-                          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
-                          "Mobile/15E148 Safari/604.1",
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/16.0 Mobile/15E148 Safari/604.1"
+            ),
         },
     }
 
     loop = asyncio.get_event_loop()
 
-    def _extract():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def _run():
+        with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
-    info = await loop.run_in_executor(None, _extract)
+    info = await loop.run_in_executor(None, _run)
     if not info:
         return []
 
-    medias = []
-
-    # Carousel / playlist
     entries = info.get("entries") or [info]
+    medias  = []
 
     for entry in entries:
         if not entry:
             continue
-
-        # Pick best video format under 50MB
-        video_url = None
-        thumb_url  = entry.get("thumbnail")
-
         formats = entry.get("formats") or []
-        # Sort by filesize asc, pick largest under 50MB
-        video_formats = [
+        # Best video under 50 MB
+        vformats = [
             f for f in formats
-            if f.get("vcodec") != "none"
-            and f.get("url")
+            if f.get("vcodec") != "none" and f.get("url")
             and (f.get("filesize") or 0) < 50 * 1024 * 1024
         ]
-        if not video_formats:
-            # No size info — just pick best quality
-            video_formats = [
-                f for f in formats
-                if f.get("vcodec") != "none" and f.get("url")
-            ]
+        if not vformats:
+            vformats = [f for f in formats
+                        if f.get("vcodec") != "none" and f.get("url")]
 
-        if video_formats:
-            best = max(video_formats,
+        if vformats:
+            best = max(vformats,
                        key=lambda f: f.get("height") or f.get("quality") or 0)
-            video_url = best.get("url")
-
-        if video_url:
-            medias.append({"type": "video", "url": video_url,
-                           "thumb": thumb_url, "title": entry.get("title", "")})
-        elif thumb_url:
-            medias.append({"type": "photo", "url": thumb_url,
+            medias.append({"type": "video", "url": best["url"],
+                           "title": entry.get("title", "")})
+        elif entry.get("thumbnail"):
+            medias.append({"type": "photo", "url": entry["thumbnail"],
                            "title": entry.get("title", "")})
 
     return medias
 
 
-async def _send_from_buffer(msg: Message, media: dict, idx: int, total: int):
-    """
-    Download into RAM buffer, send to Telegram. Zero disk usage.
-    """
+# ─── Download to RAM ───────────────────────────────────────────────────────────────────────
+
+async def _download_to_ram(url: str) -> tuple[bytes, str]:
+    """Download URL into RAM. Returns (bytes, filename). Zero disk."""
     import httpx
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
-                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
-                      "Mobile/15E148 Safari/604.1",
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/16.0 Mobile/15E148 Safari/604.1"
+        ),
         "Referer": "https://www.instagram.com/",
     }
 
-    caption = f"📸 {idx}/{total}" if total > 1 else "📸 Instagram"
-    if media.get("title"):
-        caption += f"\n{media['title'][:100]}"
-
-    async with httpx.AsyncClient(headers=headers, timeout=60,
+    async with httpx.AsyncClient(headers=headers, timeout=90,
                                  follow_redirects=True) as client:
-        r = await client.get(media["url"])
+        r = await client.get(url)
         r.raise_for_status()
         data = r.content
 
-    file_obj = BufferedInputFile(data, filename=f"ig_{idx}.mp4"
-                                 if media["type"] == "video" else f"ig_{idx}.jpg")
-
-    if media["type"] == "video":
-        await msg.answer_video(file_obj, caption=caption,
-                               supports_streaming=True)
-    else:
-        await msg.answer_photo(file_obj, caption=caption)
+    ct       = r.headers.get("content-type", "")
+    filename = "ig_media.mp4" if "video" in ct else "ig_media.jpg"
+    return data, filename
 
 
-# ─── helpers ──────────────────────────────────────────────────────────────────────────────────
+# ─── URL helpers ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize_url(text: str) -> str | None:
-    """Extract and normalize Instagram URL."""
     m = IG_URL_RE.search(text)
     if m:
-        return m.group(0).split("?")[0].rstrip("/") + "/"
+        return "https://www.instagram.com/p/" + m.group(1) + "/"
     m = IG_SHORT_RE.search(text)
     if m:
         return f"https://www.instagram.com/p/{m.group(1)}/"
-    # stories
     if "instagram.com/stories/" in text:
         return text.split("?")[0]
     return None
