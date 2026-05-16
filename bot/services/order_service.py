@@ -2,7 +2,7 @@
 Order service - place and manage SMM orders.
 """
 import logging
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Order, AdminSetting
 
@@ -10,7 +10,6 @@ logger = logging.getLogger("order_service")
 
 
 async def get_markup(session: AsyncSession) -> float:
-    """Return markup percent from settings (default 20)."""
     result = await session.execute(
         select(AdminSetting).where(AdminSetting.key == "smm_markup_percent")
     )
@@ -22,12 +21,10 @@ async def get_markup(session: AsyncSession) -> float:
 
 
 def apply_markup(price: float, markup_percent: float) -> float:
-    """Apply markup percent to a price."""
     return round(price * (1 + markup_percent / 100), 4)
 
 
 def calc_order_price(rate: float, quantity: int, markup_percent: float) -> float:
-    """Calculate final order price: rate per 1000 * quantity + markup."""
     base = rate * quantity / 1000
     return round(base * (1 + markup_percent / 100), 4)
 
@@ -42,7 +39,6 @@ async def create_order(
     cost_price: float,
     sell_price: float,
 ) -> Order:
-    """Create and persist a new order."""
     order = Order(
         user_id=user_id,
         service_id=service_id,
@@ -69,7 +65,6 @@ async def place_order(
     cost_price: float,
     sell_price: float,
 ) -> Order:
-    """Alias for create_order."""
     return await create_order(
         session, user_id, service_id, service_name,
         link, quantity, cost_price, sell_price
@@ -82,11 +77,77 @@ async def get_user_orders(session: AsyncSession, user_id: int) -> list:
         .where(Order.user_id == user_id)
         .order_by(Order.created_at.desc())
     )
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 async def get_all_orders(session: AsyncSession) -> list:
     result = await session.execute(
         select(Order).order_by(Order.created_at.desc())
     )
-    return result.scalars().all()
+    return list(result.scalars().all())
+
+
+async def get_order_by_id(session: AsyncSession, order_id: int) -> Order | None:
+    result = await session.execute(
+        select(Order).where(Order.id == order_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_order_status(
+    session: AsyncSession,
+    order_id: int,
+    status: str,
+    start_count: int = None,
+    remains: int = None,
+) -> Order | None:
+    """Update order status + start_count/remains from API sync."""
+    order = await get_order_by_id(session, order_id)
+    if not order:
+        return None
+    order.status = status
+    if start_count is not None:
+        order.start_count = start_count
+    if remains is not None:
+        order.remains = remains
+    await session.flush()
+    return order
+
+
+async def calc_refund(order: Order) -> float:
+    """
+    Calculate refund amount for cancelled/partial orders.
+    - cancelled: full refund of sell_price
+    - partial: refund proportional to remains
+    """
+    if order.status == "cancelled":
+        return float(order.sell_price or 0)
+    if order.status == "partial" and order.remains and order.quantity:
+        rate_per_unit = float(order.sell_price) / order.quantity
+        return round(rate_per_unit * order.remains, 4)
+    return 0.0
+
+
+async def process_refund(
+    session: AsyncSession,
+    order: Order,
+) -> float:
+    """Refund user for cancelled/partial order. Returns refunded amount."""
+    from services.user_service import add_balance
+    from db.models import Transaction
+    refund = await calc_refund(order)
+    if refund <= 0:
+        return 0.0
+    await add_balance(session, order.user_id, refund)
+    tx = Transaction(
+        user_id     = order.user_id,
+        type        = "refund",
+        amount      = refund,
+        status      = "approved",
+        method      = "auto",
+        description = f"Auto refund for order #{order.id} ({order.status})",
+    )
+    session.add(tx)
+    await session.flush()
+    logger.info(f"Refunded ${refund} to user {order.user_id} for order #{order.id}")
+    return refund
