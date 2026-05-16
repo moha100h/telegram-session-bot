@@ -1,7 +1,7 @@
 """
-SMMPass API client.
-Endpoint: POST https://smmpass.com/api/v2
-Features: services, add order (+ drip-feed), status, batch status, refill, balance
+SMMPass API client — https://smmpass.com/api/v1
+Supports: Default, Package, Custom Comments, Mentions (all types),
+          Comment Likes, Subscriptions, order status, balance.
 """
 import logging
 import os
@@ -11,8 +11,8 @@ import httpx
 
 logger = logging.getLogger("smmpass")
 
-API_URL = os.getenv("SMMPASS_URL", "https://smmpass.com/api/v2")
-API_KEY = os.getenv("SMMPASS_KEY", "")
+API_URL = "https://smmpass.com/api/v1"
+API_KEY = os.getenv("SMMPASS_KEY", "J4C6s9TuoivmaY7I6X5Ad2euzXzRzy3v")
 TIMEOUT = 20
 
 _cache: dict = {}
@@ -33,41 +33,40 @@ def _f(v) -> float:
     except: return 0.0
 
 
-# ─── Core POST ───────────────────────────────────────────────────────────────────
+# ─── Core POST ──────────────────────────────────────────────────────────────────
 async def _post(data: dict) -> object:
-    payload = dict(data)
-    payload["key"] = API_KEY
+    payload = {"key": API_KEY, **data}
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
         r = await c.post(API_URL, data=payload)
         r.raise_for_status()
         return r.json()
 
 
-# ─── Normalize service ─────────────────────────────────────────────────────────────
+# ─── Normalize service ───────────────────────────────────────────────────────────
 def _norm(s) -> dict | None:
     if not isinstance(s, dict): return None
     sid = _i(s.get("service", 0))
     if sid == 0: return None
     return {
-        "service":   sid,
-        "name":      _s(s.get("name", "?"))[:60],
-        "category":  _s(s.get("category", "General")),
-        "rate":      _s(s.get("rate", "0")),
-        "min":       _s(s.get("min", "1")),
-        "max":       _s(s.get("max", "10000")),
-        "type":      _s(s.get("type", "default")),
-        "desc":      _s(s.get("desc", "")),
-        "dripfeed":  bool(_i(s.get("dripfeed", 0))),
+        "service":  sid,
+        "name":     _s(s.get("name", "?"))[:60],
+        "category": _s(s.get("category", "General")),
+        "rate":     _s(s.get("rate", "0")),
+        "min":      _s(s.get("min", "1")),
+        "max":      _s(s.get("max", "10000")),
+        "type":     _s(s.get("type", "default")).lower(),
+        "desc":     _s(s.get("desc", "")),
+        "dripfeed": bool(s.get("dripfeed", False)),
     }
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────────
+# ─── Public API ─────────────────────────────────────────────────────────────────
 async def get_balance() -> dict:
     raw = await _post({"action": "balance"})
     if not isinstance(raw, dict):
         raise ValueError(f"Bad response: {raw}")
-    if "error" in raw:
-        raise ValueError(_s(raw["error"]))
+    if raw.get("status") not in ("success", None) and "balance" not in raw:
+        raise ValueError(_s(raw.get("error", raw)))
     return {
         "balance":  _s(raw.get("balance", "0")),
         "currency": _s(raw.get("currency", "USD")),
@@ -75,8 +74,7 @@ async def get_balance() -> dict:
 
 
 async def get_services(force: bool = False) -> list:
-    """Cached 5 min. force=True bypasses cache."""
-    key = "smmpass_services"
+    key = "services"
     now = time.time()
     if not force and key in _cache:
         ts, data = _cache[key]
@@ -90,40 +88,76 @@ async def get_services(force: bool = False) -> list:
     return services
 
 
-async def add_order(
-    service_id: int,
-    link: str,
-    quantity: int,
-    runs: int = 0,
-    interval: int = 0,
-) -> dict:
-    """Returns {order: int}"""
-    payload = {
-        "action":   "add",
-        "service":  service_id,
-        "link":     link,
-        "quantity": quantity,
+async def add_order_default(service_id: int, link: str, quantity: int,
+                            runs: int = None, interval: int = None) -> dict:
+    data = {"action": "add", "service": service_id, "link": link, "quantity": quantity}
+    if runs:     data["runs"]     = runs
+    if interval: data["interval"] = interval
+    return await _handle_order(await _post(data))
+
+
+async def add_order_package(service_id: int, link: str) -> dict:
+    return await _handle_order(await _post(
+        {"action": "add", "service": service_id, "link": link}))
+
+
+async def add_order_custom_comments(service_id: int, link: str, comments: str) -> dict:
+    return await _handle_order(await _post(
+        {"action": "add", "service": service_id, "link": link, "comments": comments}))
+
+
+async def add_order_mentions_hashtags(service_id: int, link: str, quantity: int,
+                                      usernames: str, hashtags: str) -> dict:
+    return await _handle_order(await _post({
+        "action": "add", "service": service_id, "link": link,
+        "quantity": quantity, "usernames": usernames, "hashtags": hashtags,
+    }))
+
+
+async def add_order_mentions_custom(service_id: int, link: str, usernames: str) -> dict:
+    return await _handle_order(await _post(
+        {"action": "add", "service": service_id, "link": link, "usernames": usernames}))
+
+
+async def add_order_mentions_hashtag(service_id: int, link: str, quantity: int,
+                                     hashtag: str) -> dict:
+    return await _handle_order(await _post({
+        "action": "add", "service": service_id, "link": link,
+        "quantity": quantity, "hashtag": hashtag,
+    }))
+
+
+async def add_order_mentions_followers(service_id: int, link: str, quantity: int,
+                                       username: str) -> dict:
+    return await _handle_order(await _post({
+        "action": "add", "service": service_id, "link": link,
+        "quantity": quantity, "username": username,
+    }))
+
+
+async def add_order_comment_likes(service_id: int, link: str, quantity: int,
+                                  username: str) -> dict:
+    return await _handle_order(await _post({
+        "action": "add", "service": service_id, "link": link,
+        "quantity": quantity, "username": username,
+    }))
+
+
+async def add_order_subscription(service_id: int, username: str,
+                                  min_qty: int, max_qty: int,
+                                  delay: int = 0, expiry: str = None) -> dict:
+    data = {
+        "action": "add", "service": service_id,
+        "username": username, "min": min_qty, "max": max_qty, "delay": delay,
     }
-    if runs > 0:     payload["runs"]     = runs
-    if interval > 0: payload["interval"] = interval
-    raw = await _post(payload)
-    if not isinstance(raw, dict):
-        raise ValueError(f"Bad response: {raw}")
-    if "error" in raw:
-        raise ValueError(_s(raw["error"]))
-    oid = _i(raw.get("order", 0))
-    if oid == 0:
-        raise ValueError(f"No order ID: {raw}")
-    return {"order": oid}
+    if expiry: data["expiry"] = expiry
+    return await _handle_order(await _post(data))
 
 
 async def get_order_status(order_id: int) -> dict:
-    """Returns {order, status, charge, start_count, remains}"""
     raw = await _post({"action": "status", "order": order_id})
-    if not isinstance(raw, dict):
-        raise ValueError(f"Bad response: {raw}")
-    if "error" in raw:
-        raise ValueError(_s(raw["error"]))
+    if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
+    if "error" in raw: raise ValueError(_s(raw["error"]))
     return {
         "order":       _s(raw.get("order", order_id)),
         "status":      _s(raw.get("status", "unknown")),
@@ -134,34 +168,19 @@ async def get_order_status(order_id: int) -> dict:
 
 
 async def get_orders_status(order_ids: list[int]) -> dict:
-    """Batch status. Returns {order_id: dict|str}"""
-    ids_str = ",".join(str(i) for i in order_ids)
-    raw = await _post({"action": "status", "orders": ids_str})
-    if not isinstance(raw, dict):
-        raise ValueError(f"Bad response: {raw}")
-    result = {}
-    for k, v in raw.items():
-        if isinstance(v, dict):
-            result[k] = {
-                "order":       _s(v.get("order", k)),
-                "status":      _s(v.get("status", "?")),
-                "charge":      _s(v.get("charge", "0")),
-                "start_count": _s(v.get("start_count", "0")),
-                "remains":     _s(v.get("remains", "0")),
-            }
-        else:
-            result[k] = _s(v)
-    return result
+    ids = ",".join(str(i) for i in order_ids)
+    raw = await _post({"action": "status", "orders": ids})
+    if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
+    return raw
 
 
-async def create_refill(order_id: int) -> dict:
-    """Returns {refill: int}"""
-    raw = await _post({"action": "refill", "order": order_id})
-    if not isinstance(raw, dict):
-        raise ValueError(f"Bad response: {raw}")
-    if "error" in raw:
-        raise ValueError(_s(raw["error"]))
-    return {"refill": _i(raw.get("refill", 0))}
+def _handle_order(raw) -> dict:
+    if not isinstance(raw, dict): raise ValueError(f"Bad response: {raw}")
+    if "error" in raw: raise ValueError(_s(raw["error"]))
+    if raw.get("status") == "error": raise ValueError(_s(raw.get("message", raw)))
+    oid = _i(raw.get("order", 0))
+    if oid == 0: raise ValueError(f"No order ID: {raw}")
+    return {"order": oid}
 
 
 def clear_cache():

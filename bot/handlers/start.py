@@ -34,8 +34,8 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="\U0001f4f8 \u0627\u06cc\u0646\u0633\u062a\u0627\u06af\u0631\u0627\u0645 \u0648 \u06cc\u0648\u062a\u06cc\u0648\u0628", callback_data="menu_social"),
         ],
         [
-            InlineKeyboardButton(text="\U0001f6e0 FJPanel \u2014 \u067e\u0646\u0644 SMM",  callback_data="menu_fjpanel"),
-            InlineKeyboardButton(text="\U0001f680 SMMPass",                callback_data="menu_smmpass"),
+            InlineKeyboardButton(text="\U0001f6e0 FJPanel \u2014 \u067e\u0646\u0644 SMM", callback_data="menu_fjpanel"),
+            InlineKeyboardButton(text="\U0001f680 SMMPass",                              callback_data="menu_smmpass"),
         ],
     ])
 
