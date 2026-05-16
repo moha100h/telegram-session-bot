@@ -33,6 +33,9 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="📸 اینستاگرام و یوتیوب", callback_data="menu_social"),
         ],
+        [
+            InlineKeyboardButton(text="🛠 FJPanel — پنل SMM", callback_data="menu_fjpanel"),
+        ],
     ])
 
 
