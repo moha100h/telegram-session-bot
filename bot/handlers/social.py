@@ -1,7 +1,6 @@
 """
-Instagram & YouTube section.
-Pro downloader: multi-API fallback chain.
-Zero disk storage. Live timeline.
+Instagram & YouTube section menu.
+Downloader + Account Manager.
 """
 import asyncio
 import logging
@@ -29,72 +28,27 @@ IG_SHORT_RE = re.compile(r"https?://instagr\.am/p/([A-Za-z0-9_\-]+)")
 SPINNER     = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
 
 
-# ─── FSM ──────────────────────────────────────────────────────────────────
 class IGState(StatesGroup):
     waiting = State()
 
 
-# ─── Timeline ──────────────────────────────────────────────────────────────────
-class TL:
-    def __init__(self):
-        self.t0      = time.monotonic()
-        self._si     = 0
-        self.steps   = []   # list of [icon, text, status, detail, t]
-        # status: wait | run | ok | err
-
-    def add(self, icon: str, text: str):
-        self.steps.append([icon, text, "wait", "", None])
-        return len(self.steps) - 1
-
-    def run(self, i: int, detail: str = ""):
-        # mark previous as ok if still running
-        for s in self.steps:
-            if s[2] == "run":
-                s[2] = "ok"
-        self.steps[i][2]  = "run"
-        self.steps[i][3]  = detail
-        self.steps[i][4]  = time.monotonic()
-
-    def ok(self, i: int, detail: str = ""):
-        self.steps[i][2] = "ok"
-        if detail: self.steps[i][3] = detail
-
-    def err(self, i: int, detail: str = ""):
-        self.steps[i][2] = "err"
-        if detail: self.steps[i][3] = detail
-
-    def _sp(self):
-        self._si = (self._si + 1) % len(SPINNER)
-        return SPINNER[self._si]
-
-    def render(self, note: str = "") -> str:
-        total = time.monotonic() - self.t0
-        lines = [f"📸 <b>Instagram Downloader</b>  ⏱ {total:.1f}s\n"]
-        for icon, text, st, detail, ts in self.steps:
-            ela = f" ({time.monotonic()-ts:.1f}s)" if ts and st == "run" else ""
-            if   st == "wait": row = f"○ {icon} {text}"
-            elif st == "run":  row = f"{self._sp()} {icon} <b>{text}</b>{ela}"
-            elif st == "ok":   row = f"✅ {icon} {text}"
-            else:              row = f"❌ {icon} {text}"
-            if detail: row += f"\n    └ <i>{detail}</i>"
-            lines.append(row)
-        if note: lines.append(f"\n{note}")
-        return "\n".join(lines)
-
-
 # ─── Menus ──────────────────────────────────────────────────────────────────
+
 def social_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 اینستاگرام", callback_data="social_instagram")],
-        [InlineKeyboardButton(text="🎥 یوتیوب",      callback_data="social_youtube")],
-        [InlineKeyboardButton(text="🔙 بازگشت",    callback_data="menu_main")],
+        [InlineKeyboardButton(text="📸 خدمات اینستاگرام", callback_data="social_instagram")],
+        [InlineKeyboardButton(text="🎥 خدمات یوتیوب",     callback_data="social_youtube")],
+        [InlineKeyboardButton(text="🔙 بازگشت",             callback_data="menu_main")],
     ])
+
 
 def instagram_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬇️ دانلود", callback_data="ig_download")],
-        [InlineKeyboardButton(text="🔙 بازگشت",  callback_data="menu_social")],
+        [InlineKeyboardButton(text="⬇️ دانلود پست / ریل",    callback_data="ig_download")],
+        [InlineKeyboardButton(text="🤖 مدیریت اکانت‌ها",    callback_data="igm_menu")],
+        [InlineKeyboardButton(text="🔙 بازگشت",                  callback_data="menu_social")],
     ])
+
 
 def youtube_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -104,6 +58,7 @@ def youtube_menu():
 
 
 # ─── Menu handlers ───────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "menu_social")
 async def menu_social(cb: CallbackQuery, state: FSMContext):
     await state.clear(); await cb.answer()
@@ -111,14 +66,17 @@ async def menu_social(cb: CallbackQuery, state: FSMContext):
         "📸 <b>اینستاگرام و یوتیوب</b>",
         reply_markup=social_menu(), parse_mode="HTML")
 
+
 @router.callback_query(F.data == "social_instagram")
 async def menu_instagram(cb: CallbackQuery, state: FSMContext):
     await state.clear(); await cb.answer()
     await cb.message.edit_text(
         "📸 <b>خدمات اینستاگرام</b>\n"
-        "• پست • ریل • IGTV • کاروسل\n"
-        "⚠️ فقط پست‌های عمومی",
+        "• دانلود پست و ریل\n"
+        "• ساخت و مدیریت اکانت\n"
+        "• فالو و لایک خودکار",
         reply_markup=instagram_menu(), parse_mode="HTML")
+
 
 @router.callback_query(F.data == "social_youtube")
 async def menu_youtube(cb: CallbackQuery, state: FSMContext):
@@ -127,12 +85,14 @@ async def menu_youtube(cb: CallbackQuery, state: FSMContext):
         "🎥 <b>یوتیوب</b> — بزودی اضافه می‌شود.",
         reply_markup=youtube_menu(), parse_mode="HTML")
 
+
 @router.callback_query(F.data == "yt_coming_soon")
 async def yt_soon(cb: CallbackQuery):
     await cb.answer("🚧 بزودی!", show_alert=True)
 
 
-# ─── Download flow ──────────────────────────────────────────────────────────────────
+# ─── Instagram downloader ───────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "ig_download")
 async def ig_download_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -146,8 +106,7 @@ async def ig_download_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(IGState.waiting)
 async def ig_download_handle(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
-        return
+    if msg.from_user.id != ADMIN_ID: return
     text = (msg.text or "").strip()
     await state.clear()
 
@@ -169,7 +128,6 @@ async def ig_download_handle(msg: Message, state: FSMContext):
         return
     tl.ok(s0, url)
 
-    # live updater
     status   = await msg.answer(tl.render(), parse_mode="HTML")
     stop_evt = asyncio.Event()
 
@@ -181,14 +139,13 @@ async def ig_download_handle(msg: Message, state: FSMContext):
     live = asyncio.create_task(_live())
 
     try:
-        # Step 1: extract
         tl.run(s1, "تلاش با چند API...")
         try:
             medias = await asyncio.wait_for(_extract(url, tl, s1), timeout=40)
         except asyncio.TimeoutError:
             tl.err(s1, "تایماوت")
             stop_evt.set()
-            await status.edit_text(tl.render("❌ تایماوت. دوباره امتحان کنید."),
+            await status.edit_text(tl.render("❌ تایماوت."),
                                    parse_mode="HTML", reply_markup=instagram_menu())
             return
         except Exception as e:
@@ -200,28 +157,22 @@ async def ig_download_handle(msg: Message, state: FSMContext):
         if not medias:
             tl.err(s1, "مدیایی پیدا نشد")
             stop_evt.set()
-            await status.edit_text(
-                tl.render("⚠️ پست خصوصی است یا لینک نامعتبر."),
-                parse_mode="HTML", reply_markup=instagram_menu())
+            await status.edit_text(tl.render("⚠️ پست خصوصی یا لینک نامعتبر."),
+                                   parse_mode="HTML", reply_markup=instagram_menu())
             return
 
         total = len(medias)
-        tl.ok(s1, f"{total} فایل یافت")
+        tl.ok(s1, f"{total} فایل")
 
         for i, media in enumerate(medias, 1):
             lbl = f"{i}/{total}"
-
-            # Step 2: download to RAM
             tl.run(s2, f"فایل {lbl}")
             try:
-                data, fname = await asyncio.wait_for(
-                    _download_ram(media["url"]), timeout=90)
+                data, fname = await asyncio.wait_for(_download_ram(media["url"]), timeout=90)
                 tl.ok(s2, f"{len(data)/1024/1024:.1f} MB")
             except Exception as e:
-                tl.err(s2, str(e)[:50])
-                continue
+                tl.err(s2, str(e)[:50]); continue
 
-            # Step 3: send
             tl.run(s3, f"فایل {lbl}")
             try:
                 cap  = f"📸 {lbl}" if total > 1 else "📸 Instagram"
@@ -234,133 +185,140 @@ async def ig_download_handle(msg: Message, state: FSMContext):
             except Exception as e:
                 tl.err(s3, str(e)[:50])
 
-            # reset for next file
             if i < total:
                 for si in (s2, s3):
                     tl.steps[si][2] = "wait"
                     tl.steps[si][3] = ""
                     tl.steps[si][4] = None
-
     finally:
         stop_evt.set()
         await asyncio.sleep(0.1)
-        try:
-            await live
-        except Exception:
-            pass
+        try: await live
+        except Exception: pass
 
     await status.edit_text(
-        tl.render(f"✅ تمام! {total} فایل ارسال شد."),
+        tl.render(f"✅ تمام! {total} فایل."),
         parse_mode="HTML", reply_markup=instagram_menu())
 
 
+# ─── Timeline ──────────────────────────────────────────────────────────────────
+
+class TL:
+    def __init__(self):
+        self.t0    = time.monotonic()
+        self._si   = 0
+        self.steps = []
+    def add(self, icon, text):
+        self.steps.append([icon, text, "wait", "", None])
+        return len(self.steps) - 1
+    def run(self, i, detail=""):
+        for s in self.steps:
+            if s[2] == "run": s[2] = "ok"
+        self.steps[i][2] = "run"
+        self.steps[i][3] = detail
+        self.steps[i][4] = time.monotonic()
+    def ok(self, i, detail=""):
+        self.steps[i][2] = "ok"
+        if detail: self.steps[i][3] = detail
+    def err(self, i, detail=""):
+        self.steps[i][2] = "err"
+        if detail: self.steps[i][3] = detail
+    def _sp(self):
+        self._si = (self._si + 1) % len(SPINNER)
+        return SPINNER[self._si]
+    def render(self, note="") -> str:
+        total = time.monotonic() - self.t0
+        lines = [f"📸 <b>Instagram</b>  ⏱ {total:.1f}s\n"]
+        for icon, text, st, detail, ts in self.steps:
+            ela = f" ({time.monotonic()-ts:.1f}s)" if ts and st == "run" else ""
+            if   st == "wait": row = f"○ {icon} {text}"
+            elif st == "run":  row = f"{self._sp()} {icon} <b>{text}</b>{ela}"
+            elif st == "ok":   row = f"✅ {icon} {text}"
+            else:              row = f"❌ {icon} {text}"
+            if detail: row += f"\n    └ <i>{detail}</i>"
+            lines.append(row)
+        if note: lines.append(f"\n{note}")
+        return "\n".join(lines)
+
+
 # ─── Multi-API extractor ─────────────────────────────────────────────────────────────────
+
 async def _extract(url: str, tl: TL, si: int) -> list[dict]:
-    """
-    Try multiple APIs in order. First success wins.
-    """
     shortcode = _shortcode(url)
-
     apis = [
-        ("snapinsta",   _api_snapinsta),
-        ("instasave",   _api_instasave),
-        ("saveinsta",   _api_saveinsta),
-        ("yt-dlp",      _api_ytdlp),
+        ("sssinstagram", _api_sss),
+        ("reelsaver",    _api_reelsaver),
+        ("yt-dlp",       _api_ytdlp),
     ]
-
     last_err = ""
     for name, fn in apis:
         tl.steps[si][3] = f"تلاش: {name}..."
         try:
-            result = await asyncio.wait_for(fn(url, shortcode), timeout=12)
+            result = await asyncio.wait_for(fn(url, shortcode), timeout=15)
             if result:
                 tl.steps[si][3] = f"✅ {name}"
                 return result
         except asyncio.TimeoutError:
             last_err = f"{name}: timeout"
-            logger.info("[ig] %s timeout", name)
         except Exception as e:
             last_err = f"{name}: {str(e)[:40]}"
-            logger.info("[ig] %s err: %s", name, e)
-
-    raise RuntimeError(f"هیچ API کار نکرد. آخرین: {last_err}")
+    raise RuntimeError(f"هیچ API کار نکرد. {last_err}")
 
 
-# ─── API 1: SnapInsta ──────────────────────────────────────────────────────────────────
-async def _api_snapinsta(url: str, shortcode: str) -> list[dict]:
+async def _api_sss(url: str, shortcode: str) -> list[dict]:
     import httpx
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
-        # Step 1: get token
-        r = await c.get("https://snapinsta.app/")
-        token = re.search(r'name="_token"\s+value="([^"]+)"', r.text)
-        if not token:
+    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
+        r = await c.get("https://sssinstagram.com/", headers={"User-Agent": _ua()})
+        tok = re.search(r'"csrfToken"\s*:\s*"([^"]+)"', r.text)
+        if not tok:
+            tok = re.search(r'name="_token"\s+value="([^"]+)"', r.text)
+        if not tok:
             return []
-        # Step 2: post
         r2 = await c.post(
-            "https://snapinsta.app/action.php",
-            data={"url": url, "_token": token.group(1), "lang": "en"},
-            headers={"X-Requested-With": "XMLHttpRequest",
-                     "Referer": "https://snapinsta.app/",
-                     "User-Agent": _ua()},
+            "https://sssinstagram.com/request",
+            data={"url": url, "_token": tok.group(1)},
+            headers={"Referer": "https://sssinstagram.com/",
+                     "User-Agent": _ua(),
+                     "X-Requested-With": "XMLHttpRequest"},
         )
         data = r2.json()
-    html = data.get("data", "")
-    if not html:
-        return []
-    # parse video/image links from HTML
-    return _parse_html_links(html)
+    items = data.get("data", {}).get("items", []) or data.get("items", [])
+    results = []
+    for item in items:
+        u = item.get("url") or item.get("video") or item.get("src")
+        if u:
+            is_v = ".mp4" in u or item.get("type") == "video"
+            results.append({"type": "video" if is_v else "photo", "url": u})
+    return results
 
 
-# ─── API 2: InstaSave (instasave.io) ──────────────────────────────────────────────────
-async def _api_instasave(url: str, shortcode: str) -> list[dict]:
+async def _api_reelsaver(url: str, shortcode: str) -> list[dict]:
     import httpx
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
-        r = await c.post(
-            "https://instasave.website/api/ajaxSearch",
-            data={"q": url, "t": "media", "lang": "en"},
-            headers={"Referer": "https://instasave.website/",
-                     "User-Agent": _ua(),
-                     "X-Requested-With": "XMLHttpRequest"},
+    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
+        r = await c.get("https://reelsaver.net/", headers={"User-Agent": _ua()})
+        tok = re.search(r'name="_token"\s+value="([^"]+)"', r.text)
+        if not tok:
+            return []
+        r2 = await c.post(
+            "https://reelsaver.net/",
+            data={"url": url, "_token": tok.group(1)},
+            headers={"Referer": "https://reelsaver.net/",
+                     "User-Agent": _ua()},
         )
-        data = r.json()
-    html = data.get("data", "")
-    if not html:
-        return []
-    return _parse_html_links(html)
+    # parse video/image from response HTML
+    return _parse_html_links(r2.text)
 
 
-# ─── API 3: SaveInsta ──────────────────────────────────────────────────────────────────
-async def _api_saveinsta(url: str, shortcode: str) -> list[dict]:
-    import httpx
-    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
-        r = await c.post(
-            "https://saveinsta.app/api/ajaxSearch",
-            data={"q": url, "t": "media", "lang": "en"},
-            headers={"Referer": "https://saveinsta.app/",
-                     "User-Agent": _ua(),
-                     "X-Requested-With": "XMLHttpRequest"},
-        )
-        data = r.json()
-    html = data.get("data", "")
-    if not html:
-        return []
-    return _parse_html_links(html)
-
-
-# ─── API 4: yt-dlp fallback ────────────────────────────────────────────────────────────────
 async def _api_ytdlp(url: str, shortcode: str) -> list[dict]:
     import yt_dlp
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        "http_headers": {"User-Agent": _ua_mobile()},
-    }
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "http_headers": {"User-Agent": _ua_mob()}}
     loop = asyncio.get_event_loop()
     def _run():
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
     info = await loop.run_in_executor(None, _run)
-    if not info:
-        return []
+    if not info: return []
     entries = info.get("entries") or [info]
     results = []
     for e in entries:
@@ -375,21 +333,17 @@ async def _api_ytdlp(url: str, shortcode: str) -> list[dict]:
     return results
 
 
-# ─── HTML parser ───────────────────────────────────────────────────────────────────────────────
 def _parse_html_links(html: str) -> list[dict]:
     results = []
-    # video links
     for m in re.finditer(r'href="(https://[^"]+\.mp4[^"]*?)"', html):
         u = m.group(1)
         if u not in [r["url"] for r in results]:
             results.append({"type": "video", "url": u})
-    # image links (only if no video found)
     if not results:
         for m in re.finditer(r'href="(https://[^"]+\.jpg[^"]*?)"', html):
             u = m.group(1)
             if u not in [r["url"] for r in results]:
                 results.append({"type": "photo", "url": u})
-    # also try src= for images
     if not results:
         for m in re.finditer(r'src="(https://[^"]+(?:cdninstagram|fbcdn)[^"]+)"', html):
             u = m.group(1)
@@ -398,7 +352,6 @@ def _parse_html_links(html: str) -> list[dict]:
     return results
 
 
-# ─── Download to RAM ───────────────────────────────────────────────────────────────────────
 async def _download_ram(url: str) -> tuple[bytes, str]:
     import httpx
     async with httpx.AsyncClient(
@@ -407,17 +360,16 @@ async def _download_ram(url: str) -> tuple[bytes, str]:
     ) as c:
         r = await c.get(url)
         r.raise_for_status()
-    ct   = r.headers.get("content-type", "")
-    ext  = "mp4" if "video" in ct else "jpg"
+    ct  = r.headers.get("content-type", "")
+    ext = "mp4" if "video" in ct else "jpg"
     return r.content, f"ig_media.{ext}"
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────────────────────
-def _shortcode(url: str) -> str:
+def _shortcode(url):
     m = IG_URL_RE.search(url)
     return m.group(1) if m else ""
 
-def _normalize_url(text: str) -> str | None:
+def _normalize_url(text):
     m = IG_URL_RE.search(text)
     if m: return f"https://www.instagram.com/p/{m.group(1)}/"
     m = IG_SHORT_RE.search(text)
@@ -425,12 +377,9 @@ def _normalize_url(text: str) -> str | None:
     if "instagram.com/stories/" in text: return text.split("?")[0]
     return None
 
-def _ua() -> str:
+def _ua():
     return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36")
-
-def _ua_mobile() -> str:
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+def _ua_mob():
     return ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-            "Version/17.0 Mobile/15E148 Safari/604.1")
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")

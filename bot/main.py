@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from handlers import (
     start, sessions, tasks, stats, backup,
     proxy, virtual_number, warmer_handler,
-    auto_session, cleanup, social,
+    auto_session, cleanup, social, ig_manager,
 )
 from services.backup import BackupService
 from services.proxy_fetcher import ProxyFetcher
@@ -28,16 +28,11 @@ ADMIN_ID  = int(os.getenv("ADMIN_ID", "0"))
 
 async def main():
     logger.info("Starting bot | ADMIN_ID=%d", ADMIN_ID)
-
     redis   = Redis.from_url(REDIS_URL)
     storage = RedisStorage(redis)
-
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    dp = Dispatcher(storage=storage)
-
+    bot = Bot(token=BOT_TOKEN,
+              default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp  = Dispatcher(storage=storage)
     dp["redis"] = redis
     dp["bot"]   = bot
 
@@ -51,7 +46,8 @@ async def main():
     dp.include_router(warmer_handler.router)
     dp.include_router(auto_session.router)
     dp.include_router(cleanup.router)
-    dp.include_router(social.router)      # Instagram & YouTube
+    dp.include_router(social.router)
+    dp.include_router(ig_manager.router)   # Instagram account manager
 
     asyncio.create_task(BackupService(bot, redis).run())
     asyncio.create_task(ProxyFetcher(redis).run())
