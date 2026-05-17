@@ -369,7 +369,7 @@ async def adm_user_search_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         "🔍 <b>جستجوی کاربر</b>\n\n"
         "یوزرنیم، نام یا آیدی عددی تلگرام را وارد کنید:\n\n"
-        "/cancel برای لغو",
+        "",
         parse_mode="HTML"
     )
 
@@ -377,8 +377,6 @@ async def adm_user_search_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.search_user)
 async def adm_user_search_handle(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     query = msg.text.strip().lstrip("@")
     await state.clear()
     from sqlalchemy import select, or_
@@ -515,7 +513,7 @@ async def adm_credit_start(cb: CallbackQuery, state: FSMContext):
         f"💰 <b>شارژ موجودی</b>\n\n"
         f"👤 {u.display_name()}  (@{u.username or u.telegram_id})\n"
         f"💳 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
-        f"مبلغ شارژ (دلار) را وارد کنید:\n/cancel برای لغو",
+        f"مبلغ شارژ (دلار) را وارد کنید:",
         parse_mode="HTML"
     )
 
@@ -536,7 +534,7 @@ async def adm_debit_start(cb: CallbackQuery, state: FSMContext):
         f"💸 <b>کسر موجودی</b>\n\n"
         f"👤 {u.display_name()}  (@{u.username or u.telegram_id})\n"
         f"💳 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
-        f"مبلغ کسر (دلار، عدد مثبت) را وارد کنید:\n/cancel برای لغو",
+        f"مبلغ کسر (دلار، عدد مثبت) را وارد کنید:",
         parse_mode="HTML"
     )
 
@@ -544,8 +542,6 @@ async def adm_debit_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.manual_credit_amt)
 async def adm_credit_handle(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     try:
         amount = float(msg.text.strip())
         if amount <= 0: raise ValueError
@@ -600,7 +596,7 @@ async def adm_manual_credit_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         "💰 <b>شارژ دستی</b>\n\n"
         "یوزرنیم یا آیدی عددی تلگرام کاربر را وارد کنید:\n\n"
-        "/cancel برای لغو",
+        "",
         parse_mode="HTML"
     )
 
@@ -608,8 +604,6 @@ async def adm_manual_credit_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.manual_credit_uid)
 async def adm_manual_credit_uid(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     query = msg.text.strip().lstrip("@")
     from sqlalchemy import select, or_
     from db.models import User as UserModel
@@ -628,7 +622,7 @@ async def adm_manual_credit_uid(msg: Message, state: FSMContext):
     await msg.answer(
         f"👤 <b>{u.display_name()}</b>  (@{u.username or u.telegram_id})\n"
         f"💰 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
-        "مبلغ شارژ (دلار) را وارد کنید:\n/cancel برای لغو",
+        "مبلغ شارژ (دلار) را وارد کنید:",
         parse_mode="HTML"
     )
 
@@ -726,7 +720,7 @@ async def adm_msg_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await cb.message.edit_text(
         f"✉️ <b>پیام مستقیم به {u.display_name()}</b>\n\n"
-        f"متن پیام را وارد کنید (HTML پشتیبانی می‌شود):\n\n/cancel برای لغو",
+        f"متن پیام را وارد کنید (HTML پشتیبانی می‌شود):",
         parse_mode="HTML"
     )
 
@@ -741,7 +735,10 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         "📤 <b>پیام همگانی</b>\n\n"
         "متن پیام را وارد کنید (HTML پشتیبانی می‌شود):\n\n"
-        "/cancel برای لغو",
+        "",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
@@ -749,8 +746,6 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.broadcast_text)
 async def adm_broadcast_handle(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     data = await state.get_data()
     tgid = data.get("msg_tgid")
     name = data.get("msg_name", "")
@@ -923,7 +918,7 @@ async def adm_order_search_start(cb: CallbackQuery, state: FSMContext):
         "🔍 <b>جستجوی سفارش</b>\n\n"
         "شناسه سفارش (مثال: <code>42</code>) یا "
         "یوزرنیم/آیدی کاربر (مثال: <code>@user</code> یا <code>123456</code>) را وارد کنید:\n\n"
-        "/cancel برای لغو",
+        "",
         parse_mode="HTML"
     )
 
@@ -931,9 +926,6 @@ async def adm_order_search_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.search_order)
 async def adm_order_search_handle(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id, "orders"): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear()
-        await msg.answer("❌ لغو شد."); return
 
     query = (msg.text or "").strip()
     await state.clear()
@@ -1403,7 +1395,10 @@ async def adm_wallet_edit(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"✏️ <b>ویرایش آدرس {coin['icon']} {coin['label']}</b>\n\n"
         f"آدرس فعلی:\n<code>{coin.get('address','—')}</code>\n\n"
-        f"آدرس جدید را وارد کنید:\n/cancel برای لغو",
+        f"آدرس جدید را وارد کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
@@ -1411,8 +1406,6 @@ async def adm_wallet_edit(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.wallet_edit_addr)
 async def adm_wallet_edit_addr(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     data     = await state.get_data()
     coin_key = data.get("wallet_edit_key")
     new_addr = (msg.text or "").strip()
@@ -1461,7 +1454,10 @@ async def adm_wallet_add(cb: CallbackQuery, state: FSMContext):
         "<code>usdt_bep | USDT (BEP20) | BEP20 | 0xABC...123 | 🟡</code>\n"
         "<code>bnb | BNB | BEP20 | 0xABC...123 | 🔶</code>\n"
         "<code>eth | Ethereum | ERC20 | 0xABC...123 | 🔷</code>\n\n"
-        "/cancel برای لغو",
+        "",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
@@ -1469,8 +1465,6 @@ async def adm_wallet_add(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.wallet_add_data)
 async def adm_wallet_add_data(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     parts = [p.strip() for p in (msg.text or "").split("|")]
     if len(parts) < 4:
         await msg.answer("❌ فرمت اشتباه. حداقل ۴ بخش با | جدا کنید."); return
@@ -1508,7 +1502,10 @@ async def adm_set_setting(cb: CallbackQuery, state: FSMContext):
     await state.update_data(setting_key=key, setting_label=label)
     await state.set_state(AdminState.set_setting_val)
     await cb.message.edit_text(
-        f"⚙️ <b>تنظیم: {label}</b>\n\nمقدار فعلی: <code>{current}</code>\n\nمقدار جدید:\n\n/cancel برای لغو",
+        f"⚙️ <b>تنظیم: {label}</b>\n\nمقدار فعلی: <code>{current}</code>\n\nمقدار جدید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
@@ -1516,8 +1513,6 @@ async def adm_set_setting(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.set_setting_val)
 async def adm_setting_val(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     data  = await state.get_data()
     key   = data.get("setting_key")
     label = data.get("setting_label", key)
@@ -1686,7 +1681,7 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(AdminState.broadcast_text)
     await cb.message.edit_text(
-        "📢 <b>پیام همگانی</b>\n\nمتن پیام را وارد کنید (HTML پشتیبانی می‌شود):\n\n/cancel برای لغو",
+        "📢 <b>پیام همگانی</b>\n\nمتن پیام را وارد کنید (HTML پشتیبانی می‌شود):",
         parse_mode="HTML"
     )
 
@@ -1694,8 +1689,6 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.broadcast_text)
 async def adm_broadcast_send(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     text = msg.text or ""
     await state.clear()
     async with AsyncSessionLocal() as session:
@@ -1747,7 +1740,10 @@ async def adm_add_admin_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(AdminState.add_admin_uid)
     await cb.message.edit_text(
-        "➕ <b>افزودن ادمین</b>\n\nآیدی عددی تلگرام ادمین جدید را وارد کنید:\n\n/cancel برای لغو",
+        "➕ <b>افزودن ادمین</b>\n\nآیدی عددی تلگرام ادمین جدید را وارد کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
@@ -1755,8 +1751,6 @@ async def adm_add_admin_start(cb: CallbackQuery, state: FSMContext):
 @router.message(AdminState.add_admin_uid)
 async def adm_add_admin_uid(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID: return
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     try:
         tg_id = int(msg.text.strip())
     except ValueError:
@@ -1886,3 +1880,18 @@ async def adm_del_admin(cb: CallbackQuery):
         await session.commit()
     await cb.answer("🗑 ادمین حذف شد.", show_alert=True)
     await adm_admins(cb)
+
+@router.callback_query(F.data == "adm_cancel")
+async def adm_cancel_handler(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer("❌ لغو شد.")
+    try:
+        await cb.message.edit_text(
+            "❌ عملیات لغو شد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 پنل ادمین", callback_data="menu_admin")]
+            ])
+        )
+    except Exception:
+        pass
+

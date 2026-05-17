@@ -14,7 +14,7 @@ from db.database import AsyncSessionLocal
 from db.models import User
 from services.user_service import get_user, set_phone
 from services.deposit_service import create_deposit_request, get_user_transactions
-from services.settings_service import get_setting, get_wallets, get_active_coins
+from services.settings_service import get_setting, get_wallets, get_active_coins, get_active_coins
 from services.order_service import get_user_orders, get_order_by_id
 from services.smmpass import get_order_status
 
@@ -204,21 +204,39 @@ async def user_deposit_coin(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"{coin['icon']} <b>واریز {coin['label']}</b>\n\n"
         f"💵 مبلغ مورد نظر را به <b>دلار</b> وارد کنید:\n"
-        f"<i>(مثال: 10 یا 25.5)</i>\n\n"
-        f"/cancel برای لغو",
+        f"<i>(مثال: 10 یا 25.5)</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data="dep_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
 
+@router.callback_query(F.data == "dep_cancel")
+async def dep_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer()
+    await cb.message.edit_text(
+        "❌ واریز لغو شد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 واریز مجدد", callback_data="user_deposit")],
+            [InlineKeyboardButton(text="🏠 بازگشت",     callback_data="user_wallet")],
+        ])
+    )
+
+
 @router.message(UserState.deposit_amount)
-async def user_deposit_amount(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
+async def user_deposit_amount(msg: Message, state: FSMContext, **kwargs):
     try:
-        amount = float(msg.text.strip().replace(",", ""))
+        amount = float((msg.text or "").strip().replace(",", ""))
         if amount <= 0: raise ValueError
     except ValueError:
-        await msg.answer("❌ مبلغ معتبر وارد کنید (مثال: 10 یا 25.5)"); return
+        await msg.answer(
+            "❌ مبلغ معتبر وارد کنید (مثال: 10 یا 25.5)",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+            ])
+        ); return
 
     data     = await state.get_data()
     coin     = data.get("deposit_coin", {})
@@ -228,10 +246,15 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
     price_usd   = await get_price_usd(coin_key)
     coin_amount = await usd_to_coin(amount, coin_key)
     if coin_amount is None:
-        await msg.answer("⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."); return
+        await msg.answer(
+            "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+            ])
+        ); return
 
     coin_str  = format_amount(coin_amount, coin_key)
-    price_str = f"${price_usd:,.4f}" if price_usd and price_usd < 100 else f"${price_usd:,.2f}" if price_usd else "—"
+    price_str = f"${price_usd:,.4f}" if price_usd and price_usd < 100 else (f"${price_usd:,.2f}" if price_usd else "—")
     addr      = coin.get("address", "—")
     label     = coin.get("label", "")
     icon      = coin.get("icon", "💳")
@@ -253,30 +276,24 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         f"<code>{addr}</code>\n\n"
         f"<i>👆 روی آدرس بالا ضربه بزنید تا کپی شود</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"📋 کپی مبلغ ارسالی: {coin_str} {sym}", copy_text=coin_str)],
-            [InlineKeyboardButton(text=f"📋 کپی آدرس کیف پول", copy_text=addr)],
-            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
+            [InlineKeyboardButton(text=f"📋 کپی مبلغ: {coin_str} {sym}", copy_text=coin_str)],
+            [InlineKeyboardButton(text="📋 کپی آدرس کیف پول",            copy_text=addr)],
+            [InlineKeyboardButton(text="❌ لغو واریز",                    callback_data="dep_cancel")],
         ]),
         parse_mode="HTML"
     )
     await msg.answer(
-        "✅ پس از واریز، <b>هش تراکنش (TX Hash)</b> را ارسال کنید:\n\n/cancel برای لغو",
+        "✅ پس از واریز، <b>هش تراکنش (TX Hash)</b> را ارسال کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+        ]),
         parse_mode="HTML"
     )
 
 
-@router.callback_query(F.data == "dep_cancel")
-async def dep_cancel(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.answer("❌ لغو شد.", show_alert=True)
-    try: await cb.message.delete()
-    except Exception: pass
-
-
 @router.message(UserState.deposit_hash)
-async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
+async def user_deposit_hash(msg: Message, state: FSMContext, **kwargs):
+    db_user  = kwargs.get("db_user")
     data     = await state.get_data()
     amount   = data.get("deposit_amount", 0)
     coin     = data.get("deposit_coin", {})
@@ -284,8 +301,11 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
     method   = coin.get("label", "USDT")
     addr     = coin.get("address", "")
     tx_hash  = (msg.text or "").strip()
+    if not tx_hash:
+        await msg.answer("❌ هش تراکنش نمی‌تواند خالی باشد."); return
+    user_id = db_user.id if db_user else msg.from_user.id
     async with AsyncSessionLocal() as session:
-        await create_deposit_request(session, db_user.id, amount, method, tx_hash, addr)
+        await create_deposit_request(session, user_id, amount, method, tx_hash, addr)
         await session.commit()
     await state.clear()
     sym = method.split()[0]
