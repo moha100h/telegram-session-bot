@@ -155,3 +155,22 @@ async def process_refund(
     await session.flush()
     logger.info(f"Refunded ${refund} to user {order.user_id} for order #{order.id}")
     return refund
+
+
+async def get_stale_orders(session: AsyncSession, older_than_hours: int) -> list:
+    """
+    سفارشاتی که بیش از older_than_hours ساعت در وضعیت pending/processing/in progress
+    مانده‌اند و هنوز کنسل نشده‌اند.
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    cutoff = datetime.utcnow() - timedelta(hours=older_than_hours)
+    result = await session.execute(
+        select(Order)
+        .where(
+            Order.status.in_(["pending", "processing", "in progress"]),
+            Order.created_at <= cutoff,
+        )
+        .order_by(Order.created_at.asc())
+    )
+    return list(result.scalars().all())
