@@ -55,6 +55,11 @@ async def add_order_mentions_custom(service: int, link: str, usernames: str) -> 
 async def add_order_subscription(service: int, username: str, min_: int, max_: int) -> dict:
     return await _post("add", {"service": service, "username": username, "min": min_, "max": max_})
 
+async def cancel_order(order_id: int) -> dict:
+    """Cancel an order via SMMPass API."""
+    return await _post("cancel", {"orders": str(order_id)})
+
+
 async def get_order_status(order_id: int) -> dict:
     return await _post("status", {"order": order_id})
 
