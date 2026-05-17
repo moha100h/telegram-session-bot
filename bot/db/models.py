@@ -47,11 +47,12 @@ class Order(Base):
     quantity     = Column(Integer, nullable=False)
     cost_price   = Column(Float, nullable=False)
     sell_price   = Column(Float, nullable=False)
-    status       = Column(String(32), default="pending", nullable=False, index=True)
-    start_count  = Column(Integer, nullable=True)
-    remains      = Column(Integer, nullable=True)
-    created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status        = Column(String(32), default="pending", nullable=False, index=True)
+    api_order_id  = Column(String(64), nullable=True, index=True)   # ID از سمت SMMPass API
+    start_count   = Column(Integer, nullable=True)
+    remains       = Column(Integer, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="orders")
 
