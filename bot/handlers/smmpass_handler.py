@@ -395,7 +395,8 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
         order = await create_order(
             session, user_id=db_user.id, service_id=int(svc_id),
             service_name=svc_name, link=link, quantity=qty,
-            cost_price=round(rate * qty / 1000, 6), sell_price=total,  # sell includes markup
+            cost_price=round(rate * qty / 1000, 6), sell_price=total,
+            api_order_id=ext_id if ext_id else None,
         )
     await state.clear()
     await cb.message.edit_text(
