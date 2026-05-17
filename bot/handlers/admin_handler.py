@@ -151,9 +151,17 @@ async def adm_deposits(cb: CallbackQuery):
             parse_mode="HTML"
         ); return
     buttons = []
+    import json as _json
     for dep in deps[:10]:
+        bot_icon = ""
+        try:
+            meta = _json.loads(dep.description or "{}")
+            if isinstance(meta, dict) and "bot_verified" in meta:
+                bot_icon = " ✅" if meta["bot_verified"] else " ⚠️"
+        except Exception:
+            pass
         buttons.append([InlineKeyboardButton(
-            text=f"💵 ${float(dep.amount):.2f} | {dep.method} | uid:{dep.user_id} | #{dep.id}",
+            text=f"💵 ${float(dep.amount):.2f} | {dep.method}{bot_icon} | #{dep.id}",
             callback_data=f"adm_dep_{dep.id}"
         )])
     buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
@@ -172,6 +180,7 @@ async def adm_dep_detail(cb: CallbackQuery):
     dep_id = int(cb.data.split("_")[-1])
     from sqlalchemy import select
     from db.models import Transaction
+    import json as _json
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(Transaction).where(Transaction.id == dep_id))
         dep = res.scalar_one_or_none()
@@ -179,19 +188,43 @@ async def adm_dep_detail(cb: CallbackQuery):
             await cb.answer("واریز یافت نشد!", show_alert=True); return
         user = await get_user_by_id(session, dep.user_id)
     uname = f"@{user.username}" if user and user.username else f"uid:{dep.user_id}"
+
+    bot_line = ""
+    try:
+        meta = _json.loads(dep.description or "{}")
+        if isinstance(meta, dict) and "bot_status" in meta:
+            bs       = meta.get("bot_status", "")
+            bv       = meta.get("bot_verified", False)
+            b_amount = meta.get("bot_amount", 0)
+            b_cur    = meta.get("bot_currency", "")
+            icon     = "✅" if bv else "⚠️"
+            bot_line = (
+                f"\n{'━'*28}\n"
+                f"🤖 <b>بررسی بات:</b> {icon} {bs}\n"
+                f"💰 مبلغ تراکنش: <b>{b_amount} {b_cur}</b>"
+            )
+    except Exception:
+        pass
+
+    tx_link = dep.tx_hash or "—"
+    tx_display = f'<a href="{tx_link}">مشاهده تراکنش 🔗</a>' if tx_link.startswith("http") else f"<code>{tx_link}</code>"
+
     await cb.message.edit_text(
-        f"💳 <b>جزئیات واریز #{dep.id}</b>\n\n"
+        f"💳 <b>جزئیات واریز #{dep.id}</b>\n"
+        f"{'━'*28}\n"
         f"👤 کاربر: <b>{uname}</b>\n"
         f"💵 مبلغ: <b>${float(dep.amount):.2f}</b>\n"
         f"🔧 روش: <b>{dep.method}</b>\n"
-        f"🔗 هش: <code>{dep.tx_hash or '—'}</code>\n"
-        f"📅 تاریخ: <b>{dep.created_at.strftime('%Y-%m-%d %H:%M')}</b>",
+        f"🔗 هش: {tx_display}\n"
+        f"📅 تاریخ: <b>{dep.created_at.strftime('%Y-%m-%d %H:%M')}</b>"
+        f"{bot_line}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ تایید",   callback_data=f"adm_dep_ok_{dep_id}"),
              InlineKeyboardButton(text="❌ رد",      callback_data=f"adm_dep_no_{dep_id}")],
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_deposits")],
         ]),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
 
 

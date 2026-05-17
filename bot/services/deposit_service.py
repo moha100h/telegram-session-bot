@@ -1,6 +1,7 @@
 """
 Deposit service - create and manage deposit requests.
 """
+import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Transaction
@@ -14,7 +15,17 @@ async def create_deposit_request(
     method: str,
     tx_hash: str = "",
     wallet_address: str = "",
+    bot_verified: bool = False,
+    bot_status: str = "",
+    bot_amount: float = 0.0,
+    bot_currency: str = "",
 ) -> Transaction:
+    meta = {
+        "bot_verified": bot_verified,
+        "bot_status":   bot_status,
+        "bot_amount":   bot_amount,
+        "bot_currency": bot_currency,
+    }
     tx = Transaction(
         user_id        = user_id,
         type           = "deposit",
@@ -23,7 +34,7 @@ async def create_deposit_request(
         method         = method,
         tx_hash        = tx_hash,
         wallet_address = wallet_address,
-        description    = f"Deposit via {method}",
+        description    = json.dumps(meta, ensure_ascii=False),
     )
     session.add(tx)
     await session.flush()
@@ -31,9 +42,7 @@ async def create_deposit_request(
 
 
 async def approve_deposit(session: AsyncSession, tx_id: int) -> tuple[bool, str]:
-    result = await session.execute(
-        select(Transaction).where(Transaction.id == tx_id)
-    )
+    result = await session.execute(select(Transaction).where(Transaction.id == tx_id))
     tx = result.scalar_one_or_none()
     if not tx:
         return False, "تراکنش یافت نشد"
@@ -45,9 +54,7 @@ async def approve_deposit(session: AsyncSession, tx_id: int) -> tuple[bool, str]
 
 
 async def reject_deposit(session: AsyncSession, tx_id: int) -> tuple[bool, str]:
-    result = await session.execute(
-        select(Transaction).where(Transaction.id == tx_id)
-    )
+    result = await session.execute(select(Transaction).where(Transaction.id == tx_id))
     tx = result.scalar_one_or_none()
     if not tx:
         return False, "تراکنش یافت نشد"

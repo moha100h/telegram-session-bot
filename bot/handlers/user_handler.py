@@ -262,10 +262,9 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         network   = coin.get("network", "")
         sym       = label.split()[0] if label else ""
 
-        await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str)
+        await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str, deposit_hash_tries=0)
         await state.set_state(UserState.deposit_hash)
 
-        # یک پیام واحد — مرتب و حرفه‌ای
         await msg.answer(
             f"{icon} <b>واریز {label}</b>\n"
             f"{'━'*28}\n"
@@ -279,10 +278,10 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
             f"<code>{addr}</code>\n\n"
             f"<i>👆 روی مبلغ یا آدرس ضربه بزنید تا کپی شود</i>\n\n"
             f"{'━'*28}\n"
-            f"✅ پس از واریز روی دکمه زیر بزنید و هش تراکنش را ارسال کنید.",
+            f"✅ پس از واریز روی دکمه زیر بزنید و لینک هش تراکنش را ارسال کنید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ واریز کردم — ارسال هش", callback_data="dep_send_hash")],
-                [InlineKeyboardButton(text="❌ لغو واریز",              callback_data="dep_cancel")],
+                [InlineKeyboardButton(text="✅ واریز کردم — ارسال لینک هش", callback_data="dep_send_hash")],
+                [InlineKeyboardButton(text="❌ لغو واریز",                   callback_data="dep_cancel")],
             ]),
             parse_mode="HTML"
         )
@@ -301,16 +300,17 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
 async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(UserState.deposit_hash)
-    # پیام قبلی رو ویرایش کن — دکمه‌ها رو عوض کن
     try:
-        data = await state.get_data()
-        coin = data.get("deposit_coin", {})
-        addr = coin.get("address", "—")
-        label = coin.get("label", "")
-        icon  = coin.get("icon", "💳")
+        data     = await state.get_data()
+        coin     = data.get("deposit_coin", {})
+        addr     = coin.get("address", "—")
+        label    = coin.get("label", "")
+        icon     = coin.get("icon", "💳")
         coin_str = data.get("deposit_coin_amount", "")
-        sym = label.split()[0] if label else ""
-        amount = data.get("deposit_amount", 0)
+        sym      = label.split()[0] if label else ""
+        amount   = data.get("deposit_amount", 0)
+        tries    = data.get("deposit_hash_tries", 0)
+        warn     = f"\n\n⚠️ <b>تلاش {tries}/3</b> — لینک صحیح را ارسال کنید." if tries > 0 else ""
         await cb.message.edit_text(
             f"{icon} <b>واریز {label}</b>\n"
             f"{'━'*28}\n"
@@ -320,8 +320,9 @@ async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
             f"📤 <b>آدرس کیف پول:</b>\n"
             f"<code>{addr}</code>\n\n"
             f"{'━'*28}\n"
-            f"🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n"
-            f"<i>مثال: 0xabc123... یا txid...</i>",
+            f"🔗 <b>لینک هش تراکنش را ارسال کنید:</b>\n"
+            f"<i>مثال: https://tronscan.org/#/transaction/abc...</i>"
+            f"{warn}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
             ]),
@@ -329,7 +330,7 @@ async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
         )
     except Exception:
         await cb.message.answer(
-            "🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n<i>مثال: 0xabc123...</i>",
+            "🔗 <b>لینک هش تراکنش را ارسال کنید:</b>\n<i>مثال: https://tronscan.org/#/transaction/abc...</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
             ]),
@@ -340,10 +341,10 @@ async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
 @router.message(UserState.deposit_hash)
 async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
     try:
-        tx_hash = (msg.text or "").strip()
-        if not tx_hash:
+        tx_link = (msg.text or "").strip()
+        if not tx_link:
             await msg.answer(
-                "❌ هش تراکنش نمی‌تواند خالی باشد.",
+                "❌ لینک هش تراکنش نمی‌تواند خالی باشد.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
                 ])
@@ -353,28 +354,94 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         amount   = data.get("deposit_amount", 0)
         coin     = data.get("deposit_coin", {})
         coin_str = data.get("deposit_coin_amount", "")
+        coin_key = coin.get("key", "usdt_trc")
         method   = coin.get("label", "USDT")
         addr     = coin.get("address", "")
         sym      = method.split()[0] if method else ""
+        tries    = data.get("deposit_hash_tries", 0)
 
+        wait_msg = await msg.answer("🔍 <b>در حال بررسی تراکنش...</b>", parse_mode="HTML")
+
+        from services.tx_verifier import verify_tx
+        result = await verify_tx(tx_link, coin_key, addr, amount)
+
+        # توکن جعلی — فوری رد
+        if not result.is_real_token:
+            await wait_msg.delete()
+            await state.clear()
+            await msg.answer(
+                f"🚫 <b>واریز رد شد — توکن جعلی!</b>\n"
+                f"{'━'*28}\n"
+                f"❌ {result.error}\n\n"
+                f"این تراکنش با توکن جعلی انجام شده و قابل قبول نیست.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📞 پشتیبانی", callback_data="user_support")],
+                    [InlineKeyboardButton(text="🏠 بازگشت",   callback_data="user_home")],
+                ]),
+                parse_mode="HTML"
+            ); return
+
+        # وضعیت بررسی بات
+        if result.ok:
+            bot_status = "✅ تایید شد"
+            bot_note   = "مبلغ و آدرس مقصد صحیح است."
+        elif result.confirmed and not result.ok:
+            bot_status = "⚠️ مغایرت دارد"
+            bot_note   = result.error
+        else:
+            bot_status = "⏳ در انتظار تایید شبکه"
+            bot_note   = result.error or "تراکنش هنوز در شبکه تایید نشده."
+
+        # بررسی ناموفق — تا ۳ بار شانس
+        if not result.ok and tries < 2:
+            await wait_msg.delete()
+            new_tries = tries + 1
+            await state.update_data(deposit_hash_tries=new_tries)
+            await msg.answer(
+                f"⚠️ <b>بررسی بات: {bot_status}</b>\n"
+                f"{'━'*28}\n"
+                f"📋 {bot_note}\n\n"
+                f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n\n"
+                f"{'━'*28}\n"
+                f"تلاش <b>{new_tries}/3</b> — لینک صحیح را ارسال کنید یا واریز را لغو کنید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 ارسال مجدد لینک هش", callback_data="dep_send_hash")],
+                    [InlineKeyboardButton(text="❌ لغو واریز",           callback_data="dep_cancel")],
+                ]),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            ); return
+
+        # ثبت درخواست
         user_id = db_user.id if db_user else msg.from_user.id
         async with AsyncSessionLocal() as session:
-            await create_deposit_request(session, user_id, amount, method, tx_hash, addr)
+            await create_deposit_request(
+                session, user_id, amount, method, tx_link, addr,
+                bot_verified=result.ok,
+                bot_status=bot_status,
+                bot_amount=result.amount,
+                bot_currency=result.currency
+            )
             await session.commit()
         await state.clear()
+        await wait_msg.delete()
 
         await msg.answer(
-            f"✅ <b>درخواست واریز ثبت شد!</b>\n"
+            f"{'✅' if result.ok else '⚠️'} <b>درخواست واریز ثبت شد!</b>\n"
             f"{'━'*28}\n"
             f"💵 مبلغ:    <b>${amount:,.2f}</b>\n"
             f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
-            f"🔗 هش:\n<code>{tx_hash[:64]}{'...' if len(tx_hash)>64 else ''}</code>\n"
+            f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n"
             f"{'━'*28}\n\n"
-            f"⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
+            f"🤖 <b>بررسی بات:</b> {bot_status}\n"
+            f"📋 {bot_note}\n\n"
+            f"{'━'*28}\n"
+            f"⏳ منتظر تایید نهایی ادمین باشید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="user_home")]
             ]),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
     except Exception as e:
         logger.exception(f"deposit_hash error: {e}")
