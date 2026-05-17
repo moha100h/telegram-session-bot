@@ -314,6 +314,13 @@ def _users_list_kb(users_chunk: list, page: int, total: int,
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+@router.callback_query(F.data == "adm_users_list")
+async def adm_users_list_legacy(cb: CallbackQuery):
+    """Fallback برای دکمه‌های قدیمی بدون پارامتر."""
+    cb.data = "adm_users_list_0_all"
+    await adm_users_list(cb)
+
+
 @router.callback_query(F.data.startswith("adm_users_list_"))
 async def adm_users_list(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "users"):
