@@ -502,6 +502,24 @@ async def adm_user_orders(cb: CallbackQuery):
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
+ADM_ORDER_ST = {
+    "pending":    ("⏳", "در صف"),
+    "processing": ("🔄", "در حال انجام"),
+    "in progress":("🔄", "در حال انجام"),
+    "completed":  ("✅", "تکمیل شده"),
+    "partial":    ("⚠️", "ناقص"),
+    "cancelled":  ("❌", "کنسل شده"),
+    "failed":     ("💔", "ناموفق"),
+    "refunded":   ("↩️", "برگشت خورده"),
+}
+
+
+def _progress_bar(done: int, total: int, length: int = 10) -> str:
+    if total <= 0: return "░" * length
+    filled = min(length, int(done / total * length))
+    return "█" * filled + "░" * (length - filled)
+
+
 @router.callback_query(F.data == "adm_orders")
 async def adm_orders(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "orders"):
@@ -509,18 +527,132 @@ async def adm_orders(cb: CallbackQuery):
     await cb.answer()
     async with AsyncSessionLocal() as session:
         orders = await get_all_orders(session)
-    ST = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","cancelled":"❌","failed":"💔"}
-    lines = []
+    if not orders:
+        await cb.message.edit_text(
+            "📦 هیچ سفارشی ثبت نشده.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")]
+            ])
+        ); return
+    buttons = []
     for o in orders[:20]:
-        icon = ST.get(o.status, "🟡")
-        lines.append(
-            f"{icon} <b>#{o.id}</b> uid:{o.user_id} | {o.service_name[:20]}\n"
-            f"   🔢{o.quantity:,} 💰${float(o.sell_price):.4f} 📅{o.created_at.strftime('%m/%d %H:%M')}"
-        )
+        icon, label = ADM_ORDER_ST.get(o.status, ("🟡", o.status))
+        short_name  = o.service_name[:22] if o.service_name else "—"
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} | {short_name} | {o.quantity:,} | {label}",
+            callback_data=f"adm_order_{o.id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
     await cb.message.edit_text(
-        f"📦 <b>آخرین سفارشات</b> ({len(orders)} کل)\n\n" + "\n\n".join(lines),
+        f"📦 <b>سفارشات</b> ({len(orders)} کل)\n\nبرای وضعیت لحظه‌ای روی سفارش کلیک کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_order_"))
+async def adm_order_live(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer("🔄 در حال دریافت وضعیت...")
+    order_id = int(cb.data.split("_")[-1])
+
+    from services.order_service import get_order_by_id, update_order_status, process_refund
+    from services.smmpass import get_order_status
+
+    async with AsyncSessionLocal() as session:
+        order = await get_order_by_id(session, order_id)
+    if not order:
+        await cb.answer("سفارش یافت نشد!", show_alert=True); return
+
+    # وضعیت live از API
+    live_status  = order.status
+    live_start   = order.start_count
+    live_remains = order.remains
+    api_order_id = None
+    api_error    = None
+
+    # api_order_id رو از DB بخون (اگه ذخیره شده)
+    try:
+        # سعی کن با order.id از API بگیر
+        api_data     = await get_order_status(order.id)
+        live_status  = str(api_data.get("status", order.status)).lower()
+        live_start   = api_data.get("start_count", order.start_count)
+        live_remains = api_data.get("remains", order.remains)
+        # آپدیت DB
+        async with AsyncSessionLocal() as session:
+            updated = await update_order_status(
+                session, order_id, live_status,
+                start_count=int(live_start)   if live_start   is not None else None,
+                remains    =int(live_remains) if live_remains is not None else None,
+            )
+            refunded = 0.0
+            if updated and live_status in ("cancelled", "partial") and order.status != live_status:
+                refunded = await process_refund(session, updated)
+                if refunded > 0:
+                    try:
+                        await cb.bot.send_message(
+                            order.user_id,
+                            f"↩️ <b>برگشت وجه</b>\n"
+                            f"سفارش #{order.id} {ADM_ORDER_ST.get(live_status,('',''))[1]} شد.\n"
+                            f"💰 <b>${refunded:.4f}</b> به موجودی شما برگشت.",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+            await session.commit()
+    except Exception as e:
+        api_error = str(e)[:100]
+
+    # محاسبه progress
+    icon, label = ADM_ORDER_ST.get(live_status, ("🟡", live_status))
+    done = 0
+    pct  = 0
+    try:
+        if live_start is not None and live_remains is not None:
+            done = max(0, int(live_start) - int(live_remains))
+            pct  = int(done / order.quantity * 100) if order.quantity > 0 else 0
+    except Exception:
+        pass
+
+    bar = _progress_bar(done, order.quantity)
+
+    # اطلاعات کاربر
+    async with AsyncSessionLocal() as session:
+        u = await get_user_by_id(session, order.user_id)
+    uname = f"@{u.username}" if u and u.username else f"uid:{order.user_id}"
+
+    text = (
+        f"📦 <b>سفارش #{order.id}</b>\n\n"
+        f"👤 کاربر: <b>{uname}</b>\n"
+        f"🛒 سرویس: <b>{order.service_name}</b>\n"
+        f"🔗 لینک: <code>{order.link}</code>\n"
+        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+        f"💰 فروش: <b>${float(order.sell_price):.4f}</b>  |  "
+        f"💹 هزینه: <b>${float(order.cost_price):.4f}</b>\n"
+        f"📅 تاریخ: <b>{order.created_at.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"{icon} وضعیت: <b>{label}</b>\n"
+    )
+    if live_start is not None:
+        text += f"🔢 شروع از: <b>{int(live_start):,}</b>\n"
+    if live_remains is not None:
+        text += f"⏳ باقی‌مانده: <b>{int(live_remains):,}</b>\n"
+    if done > 0 or pct > 0:
+        text += f"✅ انجام شده: <b>{done:,}</b> ({pct}%)\n"
+        text += f"📊 <code>{bar}</code> {pct}%\n"
+    if api_error:
+        text += f"\n⚠️ <i>خطای API: {api_error}</i>\n"
+    if live_status == "cancelled":
+        text += "\n↩️ <b>پول کاربر برگشت خورد.</b>"
+    elif live_status == "partial":
+        text += "\n↩️ <b>مابقی به کاربر برگشت داده شد.</b>"
+
+    await cb.message.edit_text(
+        text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")]
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"adm_order_{order_id}")],
+            [InlineKeyboardButton(text="🔙 بازگشت",    callback_data="adm_orders")],
         ]),
         parse_mode="HTML"
     )
