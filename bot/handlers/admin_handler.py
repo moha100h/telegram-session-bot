@@ -86,6 +86,7 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
+        [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup")],
         [InlineKeyboardButton(text="🏠 پنل کاربری",  callback_data="user_home")],
     ])
 
@@ -1296,7 +1297,8 @@ async def adm_settings(cb: CallbackQuery):
              InlineKeyboardButton(text="🚀 نام دکمه SMM",   callback_data="adm_set_smm_title")],
             [InlineKeyboardButton(text="🔑 API Key سمس‌پس", callback_data="adm_set_apikey"),
              InlineKeyboardButton(text="⏰ کنسل خودکار",    callback_data="adm_set_auto_cancel")],
-            [InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join")],
+            [InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join"),
+             InlineKeyboardButton(text="🗄 بکاپ",            callback_data="adm_backup")],
             [InlineKeyboardButton(text="🔙 بازگشت",         callback_data="menu_admin")],
         ]),
         parse_mode="HTML"

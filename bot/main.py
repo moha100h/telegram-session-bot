@@ -20,6 +20,7 @@ from handlers.user_handler       import router as user_router
 from handlers.admin_handler      import router as admin_router
 from handlers.smmpass_handler    import router as smmpass_router
 from handlers.force_join_handler import router as force_join_router
+from handlers.backup_handler     import router as backup_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +84,7 @@ async def main():
 
     # Routers — order matters!
     dp.include_router(force_join_router)  # force-join verify (FIRST — bypass auth)
+    dp.include_router(backup_router)      # backup panel
     dp.include_router(user_router)        # /start, user panel, deposit, orders
     dp.include_router(admin_router)       # admin panel
     dp.include_router(smmpass_router)     # SMM ordering flow
@@ -107,6 +109,19 @@ async def main():
         logger.warning(f"Session manager routers not loaded: {e}")
 
     await set_commands(bot)
+
+    # Backup scheduler
+    try:
+        from services.backup_service import start_scheduler as _start_backup
+        from db.database import AsyncSessionLocal as _ASL
+        from services.settings_service import get_setting as _gs
+        async with _ASL() as _s:
+            _auto = await _gs(_s, "backup_auto_enabled", "1")
+        if _auto == "1":
+            _start_backup(bot)
+            logger.info("Backup scheduler started.")
+    except Exception as _e:
+        logger.warning(f"Backup scheduler not started: {_e}")
 
     # /admin shortcut
     @dp.message(lambda m: m.text == "/admin")
