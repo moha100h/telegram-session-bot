@@ -1,107 +1,159 @@
-# 🚀 Telegram SMM Panel Bot
+# 🤖 TelegramSessionBot
 
-A professional Telegram bot for SMM (Social Media Marketing) services powered by [SMMPass](https://smmpass.com).
-
----
-
-## ✨ Features
-
-### 👤 User Panel
-| Feature | Description |
-|---|---|
-| 🛒 SMM Orders | Browse categories with pagination, view **raw API prices** (no hidden markup) |
-| 💰 Wallet | Deposit via USDT/TON/TRX, view transaction history |
-| 📦 My Orders | Track all orders with live status icons |
-| 🔍 Order Status | Check any order by API ID |
-| 👤 Profile | Balance, referral stats, phone verification |
-| 📞 Support | Configurable support link |
-
-### 🔧 Admin Panel
-| Feature | Description |
-|---|---|
-| 💳 Deposits | Approve/reject with **instant user notification** |
-| 👥 Users | Search, view details, ban/unban, manual credit |
-| 📦 Orders | View all orders with status |
-| 🚀 SMMPass | API balance, categories with profit margins, cache refresh |
-| ⚙️ Settings | Bot name, welcome message, wallet addresses, **SMM button name**, profit % |
-| 📢 Broadcast | Send message to all users |
-| 📊 Stats | Users, orders, revenue overview |
+ربات تلگرامی حرفه‌ای برای مدیریت سفارشات SMM Panel با پنل ادمین کامل و سیستم بکاپ خودکار.
 
 ---
 
-## 🛠 Tech Stack
+## ✨ امکانات
 
-- **Python 3.11** + **aiogram 3.x**
-- **PostgreSQL** + SQLAlchemy async
-- **Redis** (FSM storage)
-- **Docker Compose**
-- **SMMPass API** (httpx async client)
+### 👤 پنل کاربری
+- ثبت‌نام و ورود خودکار
+- مشاهده موجودی کیف پول
+- واریز از طریق USDT / TON / TRX
+- ثبت سفارش از SMM Panel
+- مشاهده تاریخچه سفارشات و واریزها
+
+### 🛠 پنل ادمین
+- مدیریت کاربران (مسدود/آزاد، تغییر موجودی)
+- مدیریت سفارشات (تأیید/رد/بررسی)
+- مدیریت واریزها
+- آمار کامل (کاربران، سفارشات، درآمد)
+- مدیریت ادمین‌ها
+- تنظیمات بات (پیام خوش‌آمد، کمیسیون، حداقل واریز)
+- عضویت اجباری در کانال
+- پخش همگانی پیام
+
+### 🗄 سیستم بکاپ حرفه‌ای
+- بکاپ خودکار با فاصله زمانی قابل تنظیم (۱ تا ۲۴ ساعت)
+- بکاپ دستی فوری
+- ارسال بکاپ به گروه تلگرام
+- شناسایی خودکار گروه (`/backup_id` یا Forward پیام)
+- بازگردانی از فایل zip
+- شامل: PostgreSQL + sessions + Redis
 
 ---
 
-## 🚀 Quick Start
+## 🏗 ساختار پروژه
+
+```
+telegram-session-bot/
+├── bot/
+│   ├── handlers/
+│   │   ├── admin_handler.py       # پنل ادمین کامل
+│   │   ├── user_handler.py        # پنل کاربری
+│   │   ├── smmpass_handler.py     # جریان ثبت سفارش
+│   │   ├── backup_handler.py      # سیستم بکاپ
+│   │   └── force_join_handler.py  # عضویت اجباری
+│   ├── services/
+│   │   ├── backup_service.py      # منطق بکاپ
+│   │   ├── deposit_service.py     # پردازش واریز
+│   │   ├── force_join_service.py  # بررسی عضویت
+│   │   ├── order_service.py       # مدیریت سفارشات
+│   │   ├── settings_service.py    # تنظیمات دیتابیس
+│   │   ├── smmpass.py             # اتصال به SMM Panel API
+│   │   └── user_service.py        # مدیریت کاربران
+│   ├── db/
+│   │   ├── models.py
+│   │   ├── database.py
+│   │   └── migrations.sql
+│   ├── middlewares/
+│   │   ├── auth_middleware.py
+│   │   ├── admin.py
+│   │   └── flood_control.py
+│   ├── main.py
+│   ├── config.py
+│   ├── Dockerfile
+│   └── requirements.txt
+├── docker-compose.yml
+├── .env.example
+└── install.sh
+```
+
+---
+
+## 🚀 نصب
+
+### نصب خودکار (Ubuntu 22.04)
 
 ```bash
-git clone https://github.com/moha100h/telegram-session-bot
+curl -fsSL https://raw.githubusercontent.com/moha100h/telegram-session-bot/main/install.sh | sudo bash
+```
+
+### نصب دستی
+
+```bash
+git clone https://github.com/moha100h/telegram-session-bot.git
 cd telegram-session-bot
-cp .env.example .env
-# Edit .env with your values
-docker compose up -d --build
+cp .env.example .env && nano .env
+docker compose build --no-cache
+docker compose up -d
+docker logs tsb_bot -f
 ```
 
 ---
 
-## ⚙️ Environment Variables
+## ⚙️ متغیرهای محیطی
 
-```env
-BOT_TOKEN=your_bot_token
-ADMIN_ID=your_telegram_id
-SMMPASS_KEY=your_smmpass_api_key
-DATABASE_URL=postgresql+asyncpg://smm:smm123@postgres:5432/smmbot
-REDIS_URL=redis://redis:6379/0
+| متغیر | توضیح |
+|-------|-------|
+| `BOT_TOKEN` | توکن ربات از @BotFather |
+| `ADMIN_ID` | آیدی عددی تلگرام سوپرادمین |
+| `POSTGRES_DB/USER/PASSWORD` | اطلاعات دیتابیس |
+| `SMM_API_URL` | آدرس API پنل SMM |
+| `SMM_API_KEY` | کلید API پنل SMM |
+| `USDT_WALLET` | آدرس کیف پول TRC20 |
+| `TON_WALLET` | آدرس کیف پول TON |
+| `TRX_WALLET` | آدرس کیف پول TRX |
+
+---
+
+## 🗄 راه‌اندازی بکاپ
+
+**روش ۱ — خودکار (توصیه‌شده):**
+1. بات را ادمین گروه کنید
+2. پنل ادمین ← بکاپ ← «🔍 شناسایی خودکار گروه»
+3. در گروه `/backup_id` بزنید
+4. روی «✅ بله، تنظیم کن» کلیک کنید
+
+**روش ۲ — Forward:**
+1. پنل ادمین ← بکاپ ← «🔍 شناسایی خودکار گروه»
+2. یک پیام از گروه را به بات forward کنید
+
+---
+
+## 🔧 دستورات مفید
+
+```bash
+# لاگ زنده
+docker logs tsb_bot -f
+
+# ریستارت
+docker compose restart bot
+
+# آپدیت
+cd /opt/telegram-session-bot && git pull && docker compose build --no-cache bot && docker compose up -d
+
+# وضعیت
+docker compose ps
+
+# پاک‌سازی دیسک
+docker system prune -af
 ```
 
 ---
 
-## 📁 Project Structure
+## 🛠 Stack
 
-```
-bot/
-├── handlers/
-│   ├── admin_handler.py      # Full admin panel (deposits, users, settings, SMMPass)
-│   ├── user_handler.py       # User panel (wallet, deposit, orders, support)
-│   └── smmpass_handler.py    # SMM ordering flow (categories → service → confirm → pay)
-├── services/
-│   ├── smmpass.py            # SMMPass API client (raw prices, 1h cache)
-│   ├── deposit_service.py    # Deposit management (create, approve, reject)
-│   ├── order_service.py      # Order management
-│   ├── user_service.py       # User management (balance, ban, admin check)
-│   └── settings_service.py   # Bot settings (get/set AdminSetting)
-├── db/
-│   ├── models.py             # SQLAlchemy models
-│   └── database.py           # Async DB connection
-└── middlewares/
-    └── auth_middleware.py    # Auto-register users + ban check
-```
+| ابزار | نسخه |
+|-------|------|
+| Python | 3.11 |
+| aiogram | 3.7 |
+| PostgreSQL | 15 |
+| Redis | 7 |
+| SQLAlchemy | 2.0 |
 
 ---
 
-## 💡 Key Design Decisions
+## 📄 لایسنس
 
-- **Raw prices for users** — prices shown in SMM panel are direct API prices, no markup added
-- **Profit tracking** — admin sets markup % for internal reporting only
-- **SMM button name** — configurable from admin settings (`smm_panel_title` key)
-- **Deposit flow** — manual approval with automatic Telegram notification to user
-- **FSM safety** — all order states validated, `/cancel` works at every step
-- **Pagination** — categories (5/page) and services (6/page) with prev/next navigation
-
----
-
-## 🔑 Admin Commands
-
-| Command | Description |
-|---|---|
-| `/start` | Main menu (shows admin panel button if admin) |
-| `/admin` | Direct link to admin panel |
-| `/balance` | Quick balance check |
-| `/orders` | Quick orders view |
+MIT License

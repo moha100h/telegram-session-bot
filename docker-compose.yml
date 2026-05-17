@@ -5,16 +5,16 @@ services:
     container_name: tsb_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: smm
-      POSTGRES_PASSWORD: smm123
-      POSTGRES_DB: smmbot
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U smm -d smmbot"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -22,41 +22,33 @@ services:
     restart: unless-stopped
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   bot:
-    build: ./bot
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
     container_name: tsb_bot
     restart: unless-stopped
     env_file: .env
+    environment:
+      REDIS_URL:     redis://redis:6379/0
+      POSTGRES_HOST: postgres
     volumes:
-      - ./sessions:/app/sessions
-      - ./backups:/app/backups
-      - ./data:/app/data
+      - sessions_data:/app/sessions
+      - app_data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
-    environment:
-      - PYTHONUNBUFFERED=1
-
-  worker:
-    build: ./worker
-    container_name: tsb_worker
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ./sessions:/app/sessions
-      - ./data:/app/data
-    depends_on:
-      postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
-    environment:
-      - PYTHONUNBUFFERED=1
 
 volumes:
   postgres_data:
   redis_data:
+  sessions_data:
+  app_data:
