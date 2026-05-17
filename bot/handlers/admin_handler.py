@@ -202,19 +202,30 @@ async def adm_dep_approve(cb: CallbackQuery):
     dep_id = int(cb.data.split("_")[-1])
     from sqlalchemy import select
     from db.models import Transaction
+    user_id = None
+    amount  = 0
+    method  = ""
     async with AsyncSessionLocal() as session:
         ok, msg_txt = await approve_deposit(session, dep_id)
-        await session.commit()
         res = await session.execute(select(Transaction).where(Transaction.id == dep_id))
         dep = res.scalar_one_or_none()
-    if ok and dep:
+        if dep:
+            user_id = dep.user_id
+            amount  = float(dep.amount or 0)
+            method  = dep.method or ""
+        await session.commit()
+    if ok and user_id:
         await cb.answer("✅ تایید شد!", show_alert=True)
         try:
             await cb.bot.send_message(
-                dep.user_id,
+                user_id,
                 f"✅ <b>واریز شما تایید شد!</b>\n"
-                f"💵 مبلغ <b>${float(dep.amount):.2f}</b> به حساب شما اضافه شد.\n"
-                f"💰 موجودی جدید خود را با /balance مشاهده کنید.",
+                f"{'━'*28}\n"
+                f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
+                f"💳 روش: <b>{method}</b>\n"
+                f"{'━'*28}\n\n"
+                f"💰 موجودی شما شارژ شد.\n"
+                f"برای مشاهده موجودی روی 💰 کیف پول بزنید.",
                 parse_mode="HTML"
             )
         except Exception:
@@ -231,20 +242,34 @@ async def adm_dep_reject(cb: CallbackQuery):
     dep_id = int(cb.data.split("_")[-1])
     from sqlalchemy import select
     from db.models import Transaction
+    user_id = None
+    amount  = 0
+    method  = ""
     async with AsyncSessionLocal() as session:
         ok, msg_txt = await reject_deposit(session, dep_id)
-        await session.commit()
         res = await session.execute(select(Transaction).where(Transaction.id == dep_id))
         dep = res.scalar_one_or_none()
-    if ok and dep:
+        if dep:
+            user_id = dep.user_id
+            amount  = float(dep.amount or 0)
+            method  = dep.method or ""
+        await session.commit()
+    if ok and user_id:
         await cb.answer("❌ رد شد.", show_alert=True)
         try:
             await cb.bot.send_message(
-                dep.user_id,
+                user_id,
                 f"❌ <b>واریز شما رد شد.</b>\n"
-                f"💵 مبلغ: ${float(dep.amount):.2f} | روش: {dep.method}\n"
-                "برای اطلاعات بیشتر با پشتیبانی تماس بگیرید.",
-                parse_mode="HTML"
+                f"{'━'*28}\n"
+                f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
+                f"💳 روش: <b>{method}</b>\n"
+                f"{'━'*28}\n\n"
+                f"⚠️ در صورت نیاز با پشتیبانی تماس بگیرید.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📞 پشتیبانی", callback_data="user_support")],
+                    [InlineKeyboardButton(text="💳 واریز مجدد", callback_data="user_deposit")],
+                ])
             )
         except Exception:
             pass

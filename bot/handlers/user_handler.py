@@ -265,6 +265,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str)
         await state.set_state(UserState.deposit_hash)
 
+        # یک پیام واحد — مرتب و حرفه‌ای
         await msg.answer(
             f"{icon} <b>واریز {label}</b>\n"
             f"{'━'*28}\n"
@@ -278,7 +279,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
             f"<code>{addr}</code>\n\n"
             f"<i>👆 روی مبلغ یا آدرس ضربه بزنید تا کپی شود</i>\n\n"
             f"{'━'*28}\n"
-            f"✅ پس از واریز، هش تراکنش (TX Hash) را ارسال کنید.",
+            f"✅ پس از واریز روی دکمه زیر بزنید و هش تراکنش را ارسال کنید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ واریز کردم — ارسال هش", callback_data="dep_send_hash")],
                 [InlineKeyboardButton(text="❌ لغو واریز",              callback_data="dep_cancel")],
@@ -299,21 +300,41 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
 @router.callback_query(F.data == "dep_send_hash")
 async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    # مطمئن میشیم state هنوز deposit_hash هست
     await state.set_state(UserState.deposit_hash)
-    await cb.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
-        ])
-    )
-    await cb.message.answer(
-        "🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n\n"
-        "<i>مثال: 0xabc123... یا txid...</i>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
-        ]),
-        parse_mode="HTML"
-    )
+    # پیام قبلی رو ویرایش کن — دکمه‌ها رو عوض کن
+    try:
+        data = await state.get_data()
+        coin = data.get("deposit_coin", {})
+        addr = coin.get("address", "—")
+        label = coin.get("label", "")
+        icon  = coin.get("icon", "💳")
+        coin_str = data.get("deposit_coin_amount", "")
+        sym = label.split()[0] if label else ""
+        amount = data.get("deposit_amount", 0)
+        await cb.message.edit_text(
+            f"{icon} <b>واریز {label}</b>\n"
+            f"{'━'*28}\n"
+            f"💵 مبلغ: <b>${amount:,.2f}</b>\n\n"
+            f"💰 <b>مبلغ ارسالی:</b>\n"
+            f"<code>{coin_str} {sym}</code>\n\n"
+            f"📤 <b>آدرس کیف پول:</b>\n"
+            f"<code>{addr}</code>\n\n"
+            f"{'━'*28}\n"
+            f"🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n"
+            f"<i>مثال: 0xabc123... یا txid...</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n<i>مثال: 0xabc123...</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+            ]),
+            parse_mode="HTML"
+        )
 
 
 @router.message(UserState.deposit_hash)
