@@ -267,25 +267,21 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
 
         await msg.answer(
             f"{icon} <b>واریز {label}</b>\n"
-            f"{'─'*30}\n"
-            f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
-            f"📊 قیمت لحظه‌ای: <b>{price_str}</b>\n"
-            f"🌐 شبکه: <b>{network}</b>\n"
-            f"{'─'*30}\n\n"
+            f"{'━'*28}\n"
+            f"💵 مبلغ پرداختی:  <b>${amount:,.2f}</b>\n"
+            f"📊 قیمت لحظه‌ای:  <b>{price_str}</b>\n"
+            f"🌐 شبکه:          <b>{network}</b>\n"
+            f"{'━'*28}\n\n"
             f"💰 <b>مبلغ ارسالی:</b>\n"
             f"<code>{coin_str} {sym}</code>\n\n"
             f"📤 <b>آدرس کیف پول:</b>\n"
             f"<code>{addr}</code>\n\n"
-            f"<i>👆 روی هر مقدار ضربه بزنید تا کپی شود</i>",
+            f"<i>👆 روی مبلغ یا آدرس ضربه بزنید تا کپی شود</i>\n\n"
+            f"{'━'*28}\n"
+            f"✅ پس از واریز، هش تراکنش (TX Hash) را ارسال کنید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
-            ]),
-            parse_mode="HTML"
-        )
-        await msg.answer(
-            "✅ پس از واریز، <b>هش تراکنش (TX Hash)</b> را ارسال کنید:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+                [InlineKeyboardButton(text="✅ واریز کردم — ارسال هش", callback_data="dep_send_hash")],
+                [InlineKeyboardButton(text="❌ لغو واریز",              callback_data="dep_cancel")],
             ]),
             parse_mode="HTML"
         )
@@ -300,31 +296,59 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         )
 
 
+@router.callback_query(F.data == "dep_send_hash")
+async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    # مطمئن میشیم state هنوز deposit_hash هست
+    await state.set_state(UserState.deposit_hash)
+    await cb.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
+        ])
+    )
+    await cb.message.answer(
+        "🔗 <b>هش تراکنش (TX Hash) را ارسال کنید:</b>\n\n"
+        "<i>مثال: 0xabc123... یا txid...</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
 @router.message(UserState.deposit_hash)
 async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
     try:
+        tx_hash = (msg.text or "").strip()
+        if not tx_hash:
+            await msg.answer(
+                "❌ هش تراکنش نمی‌تواند خالی باشد.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+                ])
+            ); return
+
         data     = await state.get_data()
         amount   = data.get("deposit_amount", 0)
         coin     = data.get("deposit_coin", {})
         coin_str = data.get("deposit_coin_amount", "")
         method   = coin.get("label", "USDT")
         addr     = coin.get("address", "")
-        tx_hash  = (msg.text or "").strip()
-        if not tx_hash:
-            await msg.answer("❌ هش تراکنش نمی‌تواند خالی باشد."); return
+        sym      = method.split()[0] if method else ""
+
         user_id = db_user.id if db_user else msg.from_user.id
         async with AsyncSessionLocal() as session:
             await create_deposit_request(session, user_id, amount, method, tx_hash, addr)
             await session.commit()
         await state.clear()
-        sym = method.split()[0] if method else ""
+
         await msg.answer(
             f"✅ <b>درخواست واریز ثبت شد!</b>\n"
-            f"{'─'*30}\n"
-            f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
+            f"{'━'*28}\n"
+            f"💵 مبلغ:    <b>${amount:,.2f}</b>\n"
             f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
-            f"🔗 هش:\n<code>{tx_hash[:60]}{'...' if len(tx_hash)>60 else ''}</code>\n"
-            f"{'─'*30}\n\n"
+            f"🔗 هش:\n<code>{tx_hash[:64]}{'...' if len(tx_hash)>64 else ''}</code>\n"
+            f"{'━'*28}\n\n"
             f"⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="user_home")]
@@ -333,7 +357,10 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         )
     except Exception as e:
         logger.exception(f"deposit_hash error: {e}")
-        await msg.answer(f"❌ خطای داخلی: <code>{type(e).__name__}: {str(e)[:200]}</code>", parse_mode="HTML")
+        await msg.answer(
+            f"❌ خطای داخلی: <code>{type(e).__name__}: {str(e)[:200]}</code>",
+            parse_mode="HTML"
+        )
 
 
 
