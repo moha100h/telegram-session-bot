@@ -1251,9 +1251,6 @@ SETTING_KEYS = {
     "adm_set_bot_name":    ("bot_name",           "نام بات"),
     "adm_set_welcome":     ("welcome_message",    "پیام خوش‌آمد"),
     "adm_set_support":     ("support_url",        "لینک/یوزرنیم پشتیبانی"),
-    "adm_set_wallet_usdt": ("wallet_usdt",        "آدرس USDT"),
-    "adm_set_wallet_ton":  ("wallet_ton",         "آدرس TON"),
-    "adm_set_wallet_trx":  ("wallet_trx",         "آدرس TRX"),
     "adm_set_smm_title":   ("smm_panel_title",    "نام دکمه SMM"),
     "adm_set_markup":      ("smm_markup_percent", "درصد سود SMM"),
     "adm_set_apikey":      ("smmpass_api_key",    "API Key سمس‌پس"),
@@ -1274,15 +1271,21 @@ async def adm_settings(cb: CallbackQuery):
         vals = {}
         for cb_key, (db_key, _) in SETTING_KEYS.items():
             vals[db_key] = await gs(session, db_key, "—")
+        w_usdt_on = await gs(session, "wallet_usdt_enabled", "1")
+        w_ton_on  = await gs(session, "wallet_ton_enabled",  "1")
+        w_trx_on  = await gs(session, "wallet_trx_enabled",  "1")
     api_key_masked = vals["smmpass_api_key"][:6] + "****" if len(vals["smmpass_api_key"]) > 6 else vals["smmpass_api_key"]
+    w_icons = []
+    if w_usdt_on == "1": w_icons.append("🟢USDT")
+    if w_ton_on  == "1": w_icons.append("💎TON")
+    if w_trx_on  == "1": w_icons.append("⚡TRX")
+    w_status = " | ".join(w_icons) if w_icons else "❌ هیچ‌کدام فعال نیست"
     await cb.message.edit_text(
         f"⚙️ <b>تنظیمات</b>\n\n"
         f"🤖 نام بات: <b>{vals['bot_name']}</b>\n"
         f"👋 خوش‌آمد: <i>{vals['welcome_message'][:40]}</i>\n"
         f"📞 پشتیبانی: <b>{vals['support_url']}</b>\n"
-        f"🟢 USDT: <code>{vals['wallet_usdt']}</code>\n"
-        f"💎 TON: <code>{vals['wallet_ton']}</code>\n"
-        f"⚡ TRX: <code>{vals['wallet_trx']}</code>\n"
+        f"💳 کیف پول‌های فعال: <b>{w_status}</b>\n"
         f"🚀 نام دکمه SMM: <b>{vals['smm_panel_title']}</b>\n"
         f"💹 درصد سود: <b>{vals['smm_markup_percent']}%</b>\n"
         f"🔑 API Key: <code>{api_key_masked}</code>",
@@ -1291,16 +1294,91 @@ async def adm_settings(cb: CallbackQuery):
              InlineKeyboardButton(text="👋 خوش‌آمد",        callback_data="adm_set_welcome")],
             [InlineKeyboardButton(text="📞 پشتیبانی",       callback_data="adm_set_support"),
              InlineKeyboardButton(text="💹 درصد سود",       callback_data="adm_set_markup")],
-            [InlineKeyboardButton(text="🟢 USDT",           callback_data="adm_set_wallet_usdt"),
-             InlineKeyboardButton(text="💎 TON",            callback_data="adm_set_wallet_ton")],
-            [InlineKeyboardButton(text="⚡ TRX",            callback_data="adm_set_wallet_trx"),
-             InlineKeyboardButton(text="🚀 نام دکمه SMM",   callback_data="adm_set_smm_title")],
-            [InlineKeyboardButton(text="🔑 API Key سمس‌پس", callback_data="adm_set_apikey"),
-             InlineKeyboardButton(text="⏰ کنسل خودکار",    callback_data="adm_set_auto_cancel")],
-            [InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join"),
-             InlineKeyboardButton(text="🗄 بکاپ",            callback_data="adm_backup")],
+            [InlineKeyboardButton(text="💳 کیف پول‌ها",     callback_data="adm_wallets")],
+            [InlineKeyboardButton(text="🚀 نام دکمه SMM",   callback_data="adm_set_smm_title"),
+             InlineKeyboardButton(text="🔑 API Key سمس‌پس", callback_data="adm_set_apikey")],
+            [InlineKeyboardButton(text="⏰ کنسل خودکار",    callback_data="adm_set_auto_cancel"),
+             InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join")],
+            [InlineKeyboardButton(text="🗄 بکاپ",            callback_data="adm_backup")],
             [InlineKeyboardButton(text="🔙 بازگشت",         callback_data="menu_admin")],
         ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_wallets")
+async def adm_wallets(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        usdt_addr = await gs(session, "wallet_usdt",         "تنظیم نشده")
+        ton_addr  = await gs(session, "wallet_ton",          "تنظیم نشده")
+        trx_addr  = await gs(session, "wallet_trx",          "تنظیم نشده")
+        usdt_on   = await gs(session, "wallet_usdt_enabled", "1")
+        ton_on    = await gs(session, "wallet_ton_enabled",  "1")
+        trx_on    = await gs(session, "wallet_trx_enabled",  "1")
+    def _st(on): return "✅ فعال" if on == "1" else "❌ غیرفعال"
+    await cb.message.edit_text(
+        f"💳 <b>مدیریت کیف پول‌ها</b>\n\n"
+        f"🟢 <b>USDT (TRC20)</b> — {_st(usdt_on)}\n"
+        f"<code>{usdt_addr}</code>\n\n"
+        f"💎 <b>TON</b> — {_st(ton_on)}\n"
+        f"<code>{ton_addr}</code>\n\n"
+        f"⚡ <b>TRX</b> — {_st(trx_on)}\n"
+        f"<code>{trx_addr}</code>\n\n"
+        f"<i>فقط کیف پول‌های فعال برای کاربران نمایش داده می‌شوند.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🟢 USDT — {'✅ فعال' if usdt_on=='1' else '❌ غیرفعال'}",
+                callback_data="adm_wtoggle_usdt")],
+            [InlineKeyboardButton(text="✏️ ویرایش آدرس USDT", callback_data="adm_wedit_usdt")],
+            [InlineKeyboardButton(
+                text=f"💎 TON — {'✅ فعال' if ton_on=='1' else '❌ غیرفعال'}",
+                callback_data="adm_wtoggle_ton")],
+            [InlineKeyboardButton(text="✏️ ویرایش آدرس TON",  callback_data="adm_wedit_ton")],
+            [InlineKeyboardButton(
+                text=f"⚡ TRX — {'✅ فعال' if trx_on=='1' else '❌ غیرفعال'}",
+                callback_data="adm_wtoggle_trx")],
+            [InlineKeyboardButton(text="✏️ ویرایش آدرس TRX",  callback_data="adm_wedit_trx")],
+            [InlineKeyboardButton(text="🔙 بازگشت",            callback_data="adm_settings")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_wtoggle_"))
+async def adm_wallet_toggle(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    coin = cb.data.split("adm_wtoggle_")[1]
+    key  = f"wallet_{coin}_enabled"
+    async with AsyncSessionLocal() as session:
+        cur = await gs(session, key, "1")
+        new = "0" if cur == "1" else "1"
+        await ss(session, key, new)
+        await session.commit()
+    status = "✅ فعال شد" if new == "1" else "❌ غیرفعال شد"
+    await cb.answer(f"{coin.upper()} {status}", show_alert=True)
+    await adm_wallets(cb)
+
+
+@router.callback_query(F.data.startswith("adm_wedit_"))
+async def adm_wallet_edit(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    coin   = cb.data.split("adm_wedit_")[1]
+    labels = {"usdt": "USDT (TRC20)", "ton": "TON", "trx": "TRX"}
+    label  = labels.get(coin, coin.upper())
+    async with AsyncSessionLocal() as session:
+        current = await gs(session, f"wallet_{coin}", "—")
+    await state.update_data(setting_key=f"wallet_{coin}", setting_label=f"آدرس {label}", back_cb="adm_wallets")
+    await state.set_state(AdminState.set_setting_val)
+    await cb.message.edit_text(
+        f"✏️ <b>ویرایش آدرس {label}</b>\n\n"
+        f"آدرس فعلی:\n<code>{current}</code>\n\n"
+        f"آدرس جدید را وارد کنید:\n\n/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -1338,10 +1416,11 @@ async def adm_setting_val(msg: Message, state: FSMContext):
     if key == "smmpass_api_key":
         from services.smmpass import clear_cache
         clear_cache()
+    back = data.get("back_cb", "adm_settings")
     await msg.answer(
         f"✅ <b>{label}</b> به‌روز شد.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚙️ تنظیمات", callback_data="adm_settings")]
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=back)]
         ]),
         parse_mode="HTML"
     )
