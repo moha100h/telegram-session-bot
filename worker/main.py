@@ -26,8 +26,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
-API_ID       = int(os.getenv("API_ID", "0"))
-API_HASH     = os.getenv("API_HASH", "")
+API_ID        = int(os.getenv("API_ID", "0"))
+API_HASH      = os.getenv("API_HASH", "")
+DATABASE_URL  = os.getenv("DATABASE_URL", "").replace("+asyncpg", "")  # sync-style for worker
+BOT_TOKEN     = os.getenv("BOT_TOKEN", "")
+ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))
 REDIS_URL    = os.getenv("REDIS_URL", "redis://redis:6379")
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "/app/sessions")
 DATA_DIR     = os.getenv("DATA_DIR", "/app/data")
@@ -826,12 +829,160 @@ async def _test_proxies_task(redis: Redis):
 
 
 # ================================================================
+
+# ================================================================
+# ORDER AUTO-CANCEL LOOP
+# ================================================================
+async def order_auto_cancel_loop():
+    """
+    هر 30 دقیقه سفارشات قدیمی‌تر از N ساعت رو چک می‌کنه.
+    N از جدول admin_settings خونده میشه (کلید: order_auto_cancel_hours).
+    پیش‌فرض: 48 ساعت.
+    اگه N=0 باشه، auto-cancel غیرفعاله.
+    """
+    import aiohttp
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select, text
+
+    DB_URL = os.getenv("DATABASE_URL", "")
+    if not DB_URL:
+        logger.warning("[auto_cancel] DATABASE_URL not set — loop disabled")
+        return
+
+    engine = create_async_engine(DB_URL, echo=False, pool_pre_ping=True)
+    AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    logger.info("[auto_cancel] Loop started — checking every 30 min")
+    await asyncio.sleep(60)  # اولین چک بعد از 1 دقیقه از start
+
+    while True:
+        try:
+            async with AsyncSessionLocal() as session:
+                # خواندن تنظیم N ساعت
+                res = await session.execute(
+                    text("SELECT value FROM admin_settings WHERE key = 'order_auto_cancel_hours'")
+                )
+                row = res.fetchone()
+                try:
+                    hours = int(row[0]) if row and row[0] else 48
+                except Exception:
+                    hours = 48
+
+                if hours <= 0:
+                    logger.info("[auto_cancel] Disabled (hours=0)")
+                    await asyncio.sleep(1800)
+                    continue
+
+                # پیدا کردن سفارشات stale
+                from datetime import timedelta
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+                res2 = await session.execute(
+                    text(
+                        "SELECT id, api_order_id, user_id, service_name, sell_price, quantity "
+                        "FROM orders "
+                        "WHERE status IN ('pending', 'processing', 'in progress') "
+                        "  AND created_at <= :cutoff "
+                        "ORDER BY created_at ASC"
+                    ),
+                    {"cutoff": cutoff}
+                )
+                stale = res2.fetchall()
+
+            if stale:
+                logger.info("[auto_cancel] Found %d stale orders (>%dh)", len(stale), hours)
+
+            for row in stale:
+                order_id, api_order_id, user_id, svc_name, sell_price, quantity = row
+                sell_price = float(sell_price or 0)
+
+                # ── کنسل از SMMPass API ───────────────────────────────────────
+                api_error = None
+                if api_order_id and str(api_order_id).isdigit():
+                    try:
+                        from services.smmpass import cancel_order as smm_cancel
+                        await smm_cancel(int(api_order_id))
+                        logger.info("[auto_cancel] API cancel OK — order #%d api_id=%s",
+                                    order_id, api_order_id)
+                    except Exception as e:
+                        api_error = str(e)[:80]
+                        logger.warning("[auto_cancel] API cancel failed order #%d: %s",
+                                       order_id, api_error)
+                else:
+                    api_error = "no api_order_id"
+
+                # ── آپدیت DB + refund ─────────────────────────────────────────
+                refunded = 0.0
+                try:
+                    async with AsyncSessionLocal() as session:
+                        # وضعیت رو cancelled کن
+                        await session.execute(
+                            text("UPDATE orders SET status='cancelled', "
+                                 "updated_at=NOW() WHERE id=:oid"),
+                            {"oid": order_id}
+                        )
+                        # موجودی کاربر رو برگردون
+                        await session.execute(
+                            text("UPDATE users SET balance = balance + :amt WHERE id=:uid"),
+                            {"amt": sell_price, "uid": user_id}
+                        )
+                        # ثبت تراکنش refund
+                        await session.execute(
+                            text(
+                                "INSERT INTO transactions "
+                                "(user_id, type, amount, status, method, description, created_at) "
+                                "VALUES (:uid, 'refund', :amt, 'approved', 'auto', :desc, NOW())"
+                            ),
+                            {
+                                "uid":  user_id,
+                                "amt":  sell_price,
+                                "desc": f"Auto-cancel refund for order #{order_id} (>{hours}h)",
+                            }
+                        )
+                        await session.commit()
+                        refunded = sell_price
+                        logger.info("[auto_cancel] Refunded $%.4f to user %d for order #%d",
+                                    refunded, user_id, order_id)
+                except Exception as e:
+                    logger.error("[auto_cancel] DB update failed order #%d: %s", order_id, e)
+                    continue
+
+                # ── اطلاع‌رسانی به کاربر از طریق Bot API ─────────────────────
+                if BOT_TOKEN and user_id:
+                    try:
+                        msg = (
+                            f"⏰ <b>سفارش #{order_id} به‌صورت خودکار کنسل شد</b>\n\n"
+                            f"🛒 {svc_name}\n"
+                            f"⏳ سفارش بیش از <b>{hours} ساعت</b> در صف ماند و پردازش نشد.\n"
+                            f"💰 <b>${refunded:.4f}</b> به موجودی شما برگشت داده شد."
+                        )
+                        async with aiohttp.ClientSession() as http:
+                            await http.post(
+                                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                                json={"chat_id": user_id, "text": msg, "parse_mode": "HTML"},
+                                timeout=aiohttp.ClientTimeout(total=10)
+                            )
+                    except Exception as e:
+                        logger.warning("[auto_cancel] Notify user %d failed: %s", user_id, e)
+
+                await asyncio.sleep(0.5)  # throttle بین سفارشات
+
+        except asyncio.CancelledError:
+            logger.info("[auto_cancel] Loop cancelled")
+            break
+        except Exception as e:
+            logger.error("[auto_cancel] Unexpected error: %s", e)
+
+        await asyncio.sleep(1800)  # هر 30 دقیقه
+
+
 # MAIN LOOP
 # ================================================================
 async def main():
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     logger.info("Worker started | API_ID=%d | SESSIONS_DIR=%s", API_ID, SESSIONS_DIR)
-    warmer_bg = asyncio.create_task(auto_warmer(redis))
+    warmer_bg      = asyncio.create_task(auto_warmer(redis))
+    auto_cancel_bg = asyncio.create_task(order_auto_cancel_loop())
     handlers = {
         "join":        run_join,
         "group2group": run_group2group,
@@ -877,6 +1028,7 @@ async def main():
                 logger.warning("Unknown task type: %s", task_type)
         except asyncio.CancelledError:
             warmer_bg.cancel()
+            auto_cancel_bg.cancel()
             break
         except Exception as e:
             logger.error("Worker loop error: %s: %s", type(e).__name__, e)
