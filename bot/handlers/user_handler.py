@@ -14,7 +14,7 @@ from db.database import AsyncSessionLocal
 from db.models import User
 from services.user_service import get_user, set_phone
 from services.deposit_service import create_deposit_request, get_user_transactions
-from services.settings_service import get_setting, get_wallets, get_active_coins, get_active_coins
+from services.settings_service import get_setting, get_wallets, get_active_coins, get_active_coins, get_active_coins
 from services.order_service import get_user_orders, get_order_by_id
 from services.smmpass import get_order_status
 
@@ -226,7 +226,7 @@ async def dep_cancel(cb: CallbackQuery, state: FSMContext):
 
 
 @router.message(UserState.deposit_amount)
-async def user_deposit_amount(msg: Message, state: FSMContext, **kwargs):
+async def user_deposit_amount(msg: Message, state: FSMContext):
     try:
         amount = float((msg.text or "").strip().replace(",", ""))
         if amount <= 0: raise ValueError
@@ -259,7 +259,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext, **kwargs):
     label     = coin.get("label", "")
     icon      = coin.get("icon", "💳")
     network   = coin.get("network", "")
-    sym       = label.split()[0]
+    sym       = label.split()[0] if label else ""
 
     await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str)
     await state.set_state(UserState.deposit_hash)
@@ -292,8 +292,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext, **kwargs):
 
 
 @router.message(UserState.deposit_hash)
-async def user_deposit_hash(msg: Message, state: FSMContext, **kwargs):
-    db_user  = kwargs.get("db_user")
+async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
     data     = await state.get_data()
     amount   = data.get("deposit_amount", 0)
     coin     = data.get("deposit_coin", {})
@@ -308,7 +307,7 @@ async def user_deposit_hash(msg: Message, state: FSMContext, **kwargs):
         await create_deposit_request(session, user_id, amount, method, tx_hash, addr)
         await session.commit()
     await state.clear()
-    sym = method.split()[0]
+    sym = method.split()[0] if method else ""
     await msg.answer(
         f"✅ <b>درخواست واریز ثبت شد!</b>\n"
         f"{'─'*30}\n"
