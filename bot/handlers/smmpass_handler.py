@@ -41,7 +41,6 @@ class SPState(StatesGroup):
     sub_username = State()
     sub_min      = State()
     sub_max      = State()
-    check_status = State()
 
 STATUS_ICONS = {
     "pending": "⏳", "processing": "🔄", "in progress": "🔄",
@@ -461,44 +460,33 @@ async def sp_sub_max(msg: Message, state: FSMContext, db_user: User = None):
     await _show_confirm(msg, state, db_user=db_user)
 
 
-# ── Status check ──────────────────────────────────────────────────────────────
-@router.callback_query(F.data == "sp_check_status")
-async def sp_check_status_start(cb: CallbackQuery, state: FSMContext):
-    await cb.answer()
-    await state.set_state(SPState.check_status)
-    await cb.message.edit_text(
-        "🔍 <b>وضعیت سفارش</b>\n\nشناسه سفارش API را وارد کنید:\n\n/cancel برای لغو",
-        parse_mode="HTML"
-    )
-
-@router.message(SPState.check_status)
-async def sp_check_status_handle(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
-    try:
-        oid = int(msg.text.strip())
-    except ValueError:
-        await msg.answer("❌ شناسه عددی وارد کنید."); return
-    await state.clear()
-    try:
-        r      = await get_order_status(oid)
-        status = r.get("status", "?")
-        icon   = STATUS_ICONS.get(str(status).lower(), "🟡")
-        await msg.answer(
-            f"📦 <b>سفارش #{oid}</b>\n\n"
-            f"{icon} وضعیت: <b>{status}</b>\n"
-            f"💰 هزینه: <b>{r.get('charge','?')}</b>\n"
-            f"🔢 شروع: <b>{r.get('start_count','?')}</b>  |  باقی‌مانده: <b>{r.get('remains','?')}</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 بازگشت", callback_data="menu_smmpass")]
-            ]),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await msg.answer(f"❌ خطا: {e}")
-
-
 # ── My orders ─────────────────────────────────────────────────────────────────
+def _my_orders_kb(orders: list, page: int = 0) -> InlineKeyboardMarkup:
+    """کیبورد سفارشات کاربر با صفحه‌بندی ۸ تایی."""
+    PAGE = 8
+    chunk = orders[page * PAGE: (page + 1) * PAGE]
+    buttons = []
+    for o in chunk:
+        icon = STATUS_ICONS.get(o.status, "🟡")
+        name = (o.service_name or "")[:22]
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} | {name} | {o.quantity:,}",
+            callback_data=f"sp_order_{o.id}"
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"sp_orders_pg_{page-1}"))
+    if (page + 1) * PAGE < len(orders):
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"sp_orders_pg_{page+1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([
+        InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0"),
+        InlineKeyboardButton(text="🏠 بازگشت",      callback_data="menu_smmpass"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.callback_query(F.data == "sp_my_orders")
 async def sp_my_orders(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
@@ -507,24 +495,176 @@ async def sp_my_orders(cb: CallbackQuery, db_user: User = None):
         orders = await get_user_orders(session, db_user.id)
     if not orders:
         await cb.message.edit_text(
-            "📦 هنوز سفارشی ثبت نکرده‌اید.",
+            "📦 <b>سفارشات من</b>\n\nهنوز سفارشی ثبت نکرده‌اید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 اولین سفارش", callback_data="sp_cats_0")],
+                [InlineKeyboardButton(text="🏠 بازگشت",       callback_data="menu_smmpass")],
+            ]),
+            parse_mode="HTML"
+        ); return
+
+    completed = sum(1 for o in orders if o.status == "completed")
+    active    = sum(1 for o in orders if o.status in ("pending", "processing", "in progress"))
+    spent     = sum(float(o.sell_price or 0) for o in orders)
+
+    await cb.message.edit_text(
+        f"📦 <b>سفارشات من</b>\n\n"
+        f"📊 کل: <b>{len(orders)}</b>  ✅ تکمیل: <b>{completed}</b>  "
+        f"⏳ فعال: <b>{active}</b>\n"
+        f"💰 مجموع پرداخت: <b>${spent:.4f}</b>\n\n"
+        f"روی هر سفارش کلیک کنید 👇",
+        reply_markup=_my_orders_kb(orders, page=0),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("sp_orders_pg_"))
+async def sp_orders_paged(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    page = int(cb.data.split("_")[-1])
+    from services.order_service import get_user_orders
+    async with AsyncSessionLocal() as session:
+        orders = await get_user_orders(session, db_user.id)
+    await cb.message.edit_text(
+        f"📦 <b>سفارشات من</b> — صفحه {page + 1}\n\nروی هر سفارش کلیک کنید 👇",
+        reply_markup=_my_orders_kb(orders, page=page),
+        parse_mode="HTML"
+    )
+
+
+# ── جزئیات سفارش کاربر ────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^sp_order_\d+$"))
+async def sp_order_detail(cb: CallbackQuery, db_user: User = None):
+    await cb.answer("🔄 در حال بروزرسانی...")
+    from services.order_service import get_order_by_id, update_order_status, process_refund
+    order_id = int(cb.data.split("_")[-1])
+
+    async with AsyncSessionLocal() as session:
+        order = await get_order_by_id(session, order_id)
+
+    # بررسی مالکیت
+    if not order or order.user_id != db_user.id:
+        await cb.answer("❌ سفارش یافت نشد!", show_alert=True); return
+
+    live_status  = order.status
+    live_start   = order.start_count
+    live_remains = order.remains
+    api_error    = None
+    refunded     = 0.0
+
+    # ── دریافت وضعیت live از API ─────────────────────────────────────────────
+    api_id = order.api_order_id
+    if api_id and str(api_id).isdigit():
+        try:
+            data         = await get_order_status(int(api_id))
+            live_status  = str(data.get("status", order.status)).lower()
+            live_start   = data.get("start_count", order.start_count)
+            live_remains = data.get("remains",     order.remains)
+
+            async with AsyncSessionLocal() as session:
+                updated = await update_order_status(
+                    session, order_id, live_status,
+                    start_count = int(live_start)   if live_start   is not None else None,
+                    remains     = int(live_remains) if live_remains is not None else None,
+                )
+                if updated and live_status in ("cancelled", "partial") and order.status != live_status:
+                    refunded = await process_refund(session, updated)
+                await session.commit()
+        except Exception as e:
+            api_error = str(e)[:80]
+
+    # ── محاسبه progress ───────────────────────────────────────────────────────
+    icon  = STATUS_ICONS.get(live_status, "🟡")
+    ST_FA = {
+        "pending": "در صف", "processing": "در حال انجام",
+        "in progress": "در حال انجام", "completed": "تکمیل شده",
+        "partial": "ناقص", "cancelled": "کنسل شده",
+        "failed": "ناموفق", "refunded": "برگشت خورده",
+    }
+    label = ST_FA.get(live_status, live_status)
+
+    done = pct = 0
+    try:
+        if live_start is not None and live_remains is not None:
+            done = max(0, int(live_start) - int(live_remains))
+            pct  = min(100, int(done / order.quantity * 100)) if order.quantity > 0 else 0
+    except Exception:
+        pass
+
+    bar_len = 10
+    filled  = min(bar_len, int(pct / 100 * bar_len))
+    bar     = "█" * filled + "░" * (bar_len - filled)
+
+    # ── متن پیام ─────────────────────────────────────────────────────────────
+    text = (
+        f"📦 <b>سفارش #{order.id}</b>\n\n"
+        f"🛒 <b>{order.service_name}</b>\n"
+        f"🔗 <code>{order.link}</code>\n"
+        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+        f"💰 پرداخت: <b>${float(order.sell_price):.4f}</b>\n"
+        f"📅 ثبت: <b>{order.created_at.strftime('%Y-%m-%d %H:%M')}</b>\n"
+        f"\n━━━━━━━━━━━━━━━━━\n"
+        f"{icon} وضعیت: <b>{label}</b>\n"
+    )
+    if live_start is not None:
+        text += f"🔢 شروع از: <b>{int(live_start):,}</b>\n"
+    if live_remains is not None:
+        text += f"⏳ باقی‌مانده: <b>{int(live_remains):,}</b>\n"
+    if done > 0 or pct > 0:
+        text += (
+            f"✅ انجام شده: <b>{done:,}</b> از <b>{order.quantity:,}</b>\n"
+            f"📊 <code>[{bar}]</code> <b>{pct}%</b>\n"
+        )
+    if api_error:
+        text += f"\n⚠️ <i>خطا در دریافت وضعیت: {api_error}</i>\n"
+    if refunded > 0:
+        text += f"\n↩️ <b>${refunded:.4f} به موجودی شما برگشت داده شد.</b>"
+    elif live_status == "completed":
+        text += "\n🎉 <b>سفارش با موفقیت تکمیل شد!</b>"
+    elif live_status == "cancelled":
+        text += "\n↩️ <b>سفارش کنسل شده — پول برگشت خورده.</b>"
+    elif live_status == "partial":
+        text += "\n↩️ <b>سفارش ناقص — مابقی برگشت داده شد.</b>"
+
+    await cb.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"sp_order_{order_id}")],
+            [InlineKeyboardButton(text="🔙 سفارشات من", callback_data="sp_my_orders")],
+            [InlineKeyboardButton(text="🏠 خانه",        callback_data="menu_smmpass")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
+# ── وضعیت سفارش با شناسه (حذف FSM — مستقیم از DB) ───────────────────────────
+@router.callback_query(F.data == "sp_check_status")
+async def sp_check_status_start(cb: CallbackQuery, state: FSMContext, db_user: User = None):
+    """ریدایرکت به سفارشات من — دیگه نیازی به وارد کردن شناسه API نیست."""
+    await cb.answer()
+    from services.order_service import get_user_orders
+    async with AsyncSessionLocal() as session:
+        orders = await get_user_orders(session, db_user.id)
+    if not orders:
+        await cb.message.edit_text(
+            "📦 <b>سفارشات من</b>\n\nهنوز سفارشی ثبت نکرده‌اید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
                 [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="menu_smmpass")],
-            ])
+            ]),
+            parse_mode="HTML"
         ); return
-    lines = []
-    for o in orders[:15]:
-        icon = STATUS_ICONS.get(o.status, "🟡")
-        lines.append(
-            f"{icon} <b>#{o.id}</b>  {o.service_name[:25]}\n"
-            f"   🔢 {o.quantity:,}  💰 ${float(o.sell_price):.4f}  📅 {o.created_at.strftime('%m/%d %H:%M')}"
-        )
+
+    completed = sum(1 for o in orders if o.status == "completed")
+    active    = sum(1 for o in orders if o.status in ("pending", "processing", "in progress"))
+    spent     = sum(float(o.sell_price or 0) for o in orders)
+
     await cb.message.edit_text(
-        "📦 <b>سفارشات من</b>\n\n" + "\n\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
-            [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="menu_smmpass")],
-        ]),
+        f"📦 <b>سفارشات من</b>\n\n"
+        f"📊 کل: <b>{len(orders)}</b>  ✅ تکمیل: <b>{completed}</b>  "
+        f"⏳ فعال: <b>{active}</b>\n"
+        f"💰 مجموع پرداخت: <b>${spent:.4f}</b>\n\n"
+        f"روی هر سفارش کلیک کنید 👇",
+        reply_markup=_my_orders_kb(orders, page=0),
         parse_mode="HTML"
     )
