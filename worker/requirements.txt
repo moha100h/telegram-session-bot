@@ -1,7 +1,0 @@
-telethon==1.36.0
-redis[asyncio]==5.0.4
-aiofiles==23.2.1
-aiohttp==3.9.5
-async-timeout==4.0.3
-python-socks==2.4.4
-cryptg==0.4.0
