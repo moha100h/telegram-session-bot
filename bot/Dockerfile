@@ -5,6 +5,7 @@ WORKDIR /app
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libffi-dev libssl-dev curl \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
