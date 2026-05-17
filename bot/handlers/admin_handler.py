@@ -256,37 +256,96 @@ async def adm_users(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "users"):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
+    from sqlalchemy import select, func
+    from db.models import User as UserModel
     async with AsyncSessionLocal() as session:
-        users = await get_all_users(session)
+        total_res  = await session.execute(select(func.count()).select_from(UserModel))
+        total      = total_res.scalar() or 0
+        banned_res = await session.execute(select(func.count()).select_from(UserModel).where(UserModel.is_banned == True))
+        banned     = banned_res.scalar() or 0
+        bal_res    = await session.execute(select(func.sum(UserModel.balance)).select_from(UserModel))
+        total_bal  = float(bal_res.scalar() or 0)
     await cb.message.edit_text(
-        f"👥 <b>کاربران</b> ({len(users)} نفر)\n\nیک عملیات انتخاب کنید:",
+        f"👥 <b>مدیریت کاربران</b>\n\n"
+        f"📊 کل: <b>{total}</b>  ✅ فعال: <b>{total - banned}</b>  🚫 مسدود: <b>{banned}</b>\n"
+        f"💰 مجموع موجودی: <b>${total_bal:.2f}</b>\n\n"
+        f"یک عملیات انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 جستجوی کاربر",      callback_data="adm_user_search")],
-            [InlineKeyboardButton(text="💰 شارژ دستی",          callback_data="adm_manual_credit")],
-            [InlineKeyboardButton(text="📋 لیست آخرین کاربران", callback_data="adm_users_list")],
-            [InlineKeyboardButton(text="🔙 بازگشت",             callback_data="menu_admin")],
+            [InlineKeyboardButton(text="📋 لیست کاربران",   callback_data="adm_users_list_0_all")],
+            [InlineKeyboardButton(text="🔍 جستجوی کاربر",   callback_data="adm_user_search")],
+            [InlineKeyboardButton(text="💰 شارژ دستی",       callback_data="adm_manual_credit")],
+            [InlineKeyboardButton(text="📤 پیام همگانی",     callback_data="adm_broadcast")],
+            [InlineKeyboardButton(text="🔙 بازگشت",          callback_data="menu_admin")],
         ]),
         parse_mode="HTML"
     )
 
 
-@router.callback_query(F.data == "adm_users_list")
+def _users_list_kb(users_chunk: list, page: int, total: int,
+                   filter_mode: str = "all") -> InlineKeyboardMarkup:
+    PAGE = 8
+    buttons = []
+    for u in users_chunk:
+        icon  = "🚫" if u.is_banned else "✅"
+        uname = f"@{u.username}" if u.username else f"#{u.telegram_id}"
+        bal   = float(u.balance or 0)
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} {u.display_name()[:18]} {uname} | ${bal:.2f}",
+            callback_data=f"adm_uid_{u.id}"
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_users_list_{page-1}_{filter_mode}"))
+    pages = max(1, (total + PAGE - 1) // PAGE)
+    nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="noop"))
+    if (page + 1) * PAGE < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_users_list_{page+1}_{filter_mode}"))
+    if nav:
+        buttons.append(nav)
+    f_all    = "✦ همه"    if filter_mode == "all"    else "👥 همه"
+    f_banned = "✦ مسدود"  if filter_mode == "banned" else "🚫 مسدود"
+    f_rich   = "✦ موجودی" if filter_mode == "rich"   else "💰 موجودی"
+    buttons.append([
+        InlineKeyboardButton(text=f_all,    callback_data="adm_users_list_0_all"),
+        InlineKeyboardButton(text=f_banned, callback_data="adm_users_list_0_banned"),
+        InlineKeyboardButton(text=f_rich,   callback_data="adm_users_list_0_rich"),
+    ])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_users")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data.startswith("adm_users_list_"))
 async def adm_users_list(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "users"):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
+    parts       = cb.data.split("_")
+    page        = int(parts[3]) if len(parts) > 3 else 0
+    filter_mode = parts[4]      if len(parts) > 4 else "all"
+    PAGE        = 8
+
+    from sqlalchemy import select, desc
+    from db.models import User as UserModel
     async with AsyncSessionLocal() as session:
-        users = await get_all_users(session)
-    lines = []
-    for u in users[:20]:
-        status = "🚫" if u.is_banned else "✅"
-        uname  = f"@{u.username}" if u.username else f"#{u.telegram_id}"
-        lines.append(f"{status} <b>{u.display_name()}</b> {uname} | 💰${float(u.balance or 0):.2f}")
+        q = select(UserModel)
+        if filter_mode == "banned":
+            q = q.where(UserModel.is_banned == True).order_by(desc(UserModel.created_at))
+        elif filter_mode == "rich":
+            q = q.order_by(desc(UserModel.balance))
+        else:
+            q = q.order_by(desc(UserModel.created_at))
+        res   = await session.execute(q)
+        users = res.scalars().all()
+
+    total = len(users)
+    chunk = users[page * PAGE: (page + 1) * PAGE]
+    labels = {"all": "همه", "banned": "مسدود", "rich": "بیشترین موجودی"}
+
     await cb.message.edit_text(
-        f"👥 <b>آخرین {min(20,len(users))} کاربر</b>\n\n" + "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_users")]
-        ]),
+        f"👥 <b>لیست کاربران</b> — {labels.get(filter_mode,'همه')}\n"
+        f"📊 {total} کاربر | صفحه {page+1}\n\n"
+        f"روی هر کاربر کلیک کنید 👇",
+        reply_markup=_users_list_kb(chunk, page, total, filter_mode),
         parse_mode="HTML"
     )
 
@@ -297,7 +356,12 @@ async def adm_user_search_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
     await state.set_state(AdminState.search_user)
-    await cb.message.edit_text("🔍 یوزرنیم یا آیدی عددی کاربر را وارد کنید:\n\n/cancel برای لغو")
+    await cb.message.edit_text(
+        "🔍 <b>جستجوی کاربر</b>\n\n"
+        "یوزرنیم، نام یا آیدی عددی تلگرام را وارد کنید:\n\n"
+        "/cancel برای لغو",
+        parse_mode="HTML"
+    )
 
 
 @router.message(AdminState.search_user)
@@ -307,27 +371,43 @@ async def adm_user_search_handle(msg: Message, state: FSMContext):
         await state.clear(); await msg.answer("❌ لغو شد."); return
     query = msg.text.strip().lstrip("@")
     await state.clear()
-    from sqlalchemy import select
+    from sqlalchemy import select, or_
     from db.models import User as UserModel
     async with AsyncSessionLocal() as session:
         if query.isdigit():
-            res = await session.execute(select(UserModel).where(UserModel.telegram_id == int(query)))
+            res = await session.execute(
+                select(UserModel).where(UserModel.telegram_id == int(query))
+            )
         else:
-            res = await session.execute(select(UserModel).where(UserModel.username.ilike(f"%{query}%")))
+            res = await session.execute(
+                select(UserModel).where(
+                    or_(
+                        UserModel.username.ilike(f"%{query}%"),
+                        UserModel.first_name.ilike(f"%{query}%"),
+                    )
+                )
+            )
         users = res.scalars().all()
     if not users:
-        await msg.answer("❌ کاربری یافت نشد."); return
+        await msg.answer(
+            "❌ کاربری یافت نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_users")]
+            ])
+        ); return
     buttons = []
-    for u in users[:5]:
+    for u in users[:8]:
+        icon  = "🚫" if u.is_banned else "✅"
         uname = f"@{u.username}" if u.username else f"#{u.telegram_id}"
         buttons.append([InlineKeyboardButton(
-            text=f"{'🚫' if u.is_banned else '✅'} {u.display_name()} {uname} | ${float(u.balance or 0):.2f}",
+            text=f"{icon} {u.display_name()[:18]} {uname} | ${float(u.balance or 0):.2f}",
             callback_data=f"adm_uid_{u.id}"
         )])
     buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_users")])
     await msg.answer(
-        f"🔍 نتایج ({len(users)} مورد):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        f"🔍 <b>{len(users)} نتیجه</b> برای «{query}»:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
     )
 
 
@@ -337,25 +417,46 @@ async def adm_user_detail(cb: CallbackQuery):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
     uid = int(cb.data.split("_")[-1])
+    from services.order_service import get_user_orders
+    from services.deposit_service import get_user_transactions
     async with AsyncSessionLocal() as session:
-        u = await get_user_by_id(session, uid)
+        u      = await get_user_by_id(session, uid)
+        orders = await get_user_orders(session, uid)
+        txns   = await get_user_transactions(session, uid)
     if not u:
         await cb.answer("کاربر یافت نشد!", show_alert=True); return
-    uname = f"@{u.username}" if u.username else "—"
+    uname       = f"@{u.username}" if u.username else "—"
+    total_ord   = len(orders)
+    done_ord    = sum(1 for o in orders if o.status == "completed")
+    active_ord  = sum(1 for o in orders if o.status in ("pending","processing","in progress"))
+    total_dep   = sum(float(t.amount or 0) for t in txns if t.type == "deposit" and t.status == "approved")
+    total_spent = sum(float(o.sell_price or 0) for o in orders)
+    last_order  = orders[0].created_at.strftime("%Y-%m-%d") if orders else "—"
     await cb.message.edit_text(
-        f"👤 <b>{u.display_name()}</b>\n\n"
-        f"🆔 Telegram ID: <code>{u.telegram_id}</code>\n"
+        f"👤 <b>{u.display_name()}</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🆔 TG ID: <code>{u.telegram_id}</code>\n"
         f"👤 یوزرنیم: {uname}\n"
         f"📱 شماره: {u.phone or '—'}\n"
-        f"💰 موجودی: <b>${float(u.balance or 0):.2f}</b>\n"
-        f"🚫 وضعیت: {'🚫 مسدود' if u.is_banned else '✅ فعال'}\n"
-        f"👥 دعوت‌ها: {u.referral_count}\n"
-        f"📅 عضویت: {u.created_at.strftime('%Y-%m-%d')}",
+        f"📅 عضویت: {u.created_at.strftime('%Y-%m-%d')}\n"
+        f"🔗 معرفی‌ها: <b>{u.referral_count}</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"💰 موجودی: <b>${float(u.balance or 0):.4f}</b>\n"
+        f"💳 کل واریز: <b>${total_dep:.2f}</b>\n"
+        f"🛒 کل خرید: <b>${total_spent:.4f}</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"📦 سفارشات: <b>{total_ord}</b>  ✅ {done_ord}  ⏳ {active_ord}\n"
+        f"🕐 آخرین سفارش: {last_order}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"{'🚫 <b>مسدود</b>' if u.is_banned else '✅ <b>فعال</b>'}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💰 شارژ موجودی",  callback_data=f"adm_credit_{u.id}"),
-             InlineKeyboardButton(text="📦 سفارشات",      callback_data=f"adm_uorders_{u.id}")],
-            [InlineKeyboardButton(
-                text="🚫 مسدود کردن" if not u.is_banned else "✅ رفع مسدودی",
+            [InlineKeyboardButton(text="💰 شارژ",         callback_data=f"adm_credit_{u.id}"),
+             InlineKeyboardButton(text="💸 کسر",          callback_data=f"adm_debit_{u.id}")],
+            [InlineKeyboardButton(text="📦 سفارشات",      callback_data=f"adm_uorders_{u.id}"),
+             InlineKeyboardButton(text="💳 تراکنش‌ها",    callback_data=f"adm_utxns_{u.id}")],
+            [InlineKeyboardButton(text="✉️ پیام مستقیم",  callback_data=f"adm_msg_{u.id}"),
+             InlineKeyboardButton(
+                text="🚫 مسدود" if not u.is_banned else "✅ رفع مسدودی",
                 callback_data=f"adm_toggleban_{u.id}"
             )],
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_users")],
@@ -376,17 +477,13 @@ async def adm_toggle_ban(cb: CallbackQuery):
         if u.is_banned:
             await unban_user(session, u.telegram_id)
             await cb.answer("✅ رفع مسدودی شد.")
-            try:
-                await cb.bot.send_message(u.telegram_id, "✅ حساب شما از مسدودی خارج شد.")
-            except Exception:
-                pass
+            try: await cb.bot.send_message(u.telegram_id, "✅ حساب شما از مسدودی خارج شد.")
+            except Exception: pass
         else:
             await ban_user(session, u.telegram_id)
             await cb.answer("🚫 مسدود شد.")
-            try:
-                await cb.bot.send_message(u.telegram_id, "🚫 حساب شما مسدود شد. با پشتیبانی تماس بگیرید.")
-            except Exception:
-                pass
+            try: await cb.bot.send_message(u.telegram_id, "🚫 حساب شما مسدود شد. با پشتیبانی تماس بگیرید.")
+            except Exception: pass
         await session.commit()
     cb.data = f"adm_uid_{uid}"
     await adm_user_detail(cb)
@@ -397,10 +494,41 @@ async def adm_credit_start(cb: CallbackQuery, state: FSMContext):
     if not await _is_admin(cb.from_user.id, "users"):
         await cb.answer("⛔️", show_alert=True); return
     uid = int(cb.data.split("_")[-1])
-    await state.update_data(credit_uid=uid)
+    async with AsyncSessionLocal() as session:
+        u = await get_user_by_id(session, uid)
+    if not u:
+        await cb.answer("کاربر یافت نشد!", show_alert=True); return
+    await state.update_data(credit_uid=uid, credit_op="add")
     await state.set_state(AdminState.manual_credit_amt)
     await cb.answer()
-    await cb.message.edit_text("💰 مبلغ شارژ (دلار) را وارد کنید:\n\n/cancel برای لغو")
+    await cb.message.edit_text(
+        f"💰 <b>شارژ موجودی</b>\n\n"
+        f"👤 {u.display_name()}  (@{u.username or u.telegram_id})\n"
+        f"💳 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
+        f"مبلغ شارژ (دلار) را وارد کنید:\n/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_debit_"))
+async def adm_debit_start(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "users"):
+        await cb.answer("⛔️", show_alert=True); return
+    uid = int(cb.data.split("_")[-1])
+    async with AsyncSessionLocal() as session:
+        u = await get_user_by_id(session, uid)
+    if not u:
+        await cb.answer("کاربر یافت نشد!", show_alert=True); return
+    await state.update_data(credit_uid=uid, credit_op="debit")
+    await state.set_state(AdminState.manual_credit_amt)
+    await cb.answer()
+    await cb.message.edit_text(
+        f"💸 <b>کسر موجودی</b>\n\n"
+        f"👤 {u.display_name()}  (@{u.username or u.telegram_id})\n"
+        f"💳 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
+        f"مبلغ کسر (دلار، عدد مثبت) را وارد کنید:\n/cancel برای لغو",
+        parse_mode="HTML"
+    )
 
 
 @router.message(AdminState.manual_credit_amt)
@@ -412,27 +540,41 @@ async def adm_credit_handle(msg: Message, state: FSMContext):
         amount = float(msg.text.strip())
         if amount <= 0: raise ValueError
     except ValueError:
-        await msg.answer("❌ مبلغ معتبر وارد کنید."); return
+        await msg.answer("❌ عدد مثبت وارد کنید."); return
     data = await state.get_data()
     uid  = data.get("credit_uid")
+    op   = data.get("credit_op", "add")
     await state.clear()
     async with AsyncSessionLocal() as session:
         u = await get_user_by_id(session, uid)
         if not u:
             await msg.answer("❌ کاربر یافت نشد."); return
-        await add_balance(session, u.id, amount)
+        if op == "debit":
+            ok = await deduct_balance(session, u.id, amount)
+            if not ok:
+                await msg.answer("❌ موجودی کافی نیست."); return
+            new_bal = float(u.balance or 0) - amount
+            action_fa = "کسر شد ⬇️"
+            sign = "-"
+        else:
+            await add_balance(session, u.id, amount)
+            new_bal = float(u.balance or 0) + amount
+            action_fa = "اضافه شد ✅"
+            sign = "+"
         await session.commit()
-        new_bal = float(u.balance or 0) + amount
     await msg.answer(
-        f"✅ <b>${amount:.2f}</b> به <b>{u.display_name()}</b> اضافه شد.\n"
-        f"💰 موجودی جدید: <b>${new_bal:.2f}</b>",
-        parse_mode="HTML"
+        f"{'✅' if op=='add' else '⬇️'} <b>{sign}${amount:.2f}</b> به <b>{u.display_name()}</b> {action_fa}\n"
+        f"💰 موجودی جدید: <b>${new_bal:.4f}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 پروفایل کاربر", callback_data=f"adm_uid_{uid}")]
+        ])
     )
     try:
+        note = f"💰 <b>+${amount:.2f}</b> به موجودی شما اضافه شد!" if op == "add" else f"⬇️ <b>-${amount:.2f}</b> از موجودی شما کسر شد."
         await msg.bot.send_message(
             u.telegram_id,
-            f"💰 <b>${amount:.2f}</b> به موجودی شما اضافه شد!\n"
-            f"💳 موجودی جدید: <b>${new_bal:.2f}</b>",
+            f"{note}\n💳 موجودی جدید: <b>${new_bal:.4f}</b>",
             parse_mode="HTML"
         )
     except Exception:
@@ -445,7 +587,12 @@ async def adm_manual_credit_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
     await state.set_state(AdminState.manual_credit_uid)
-    await cb.message.edit_text("💰 آیدی عددی تلگرام کاربر را وارد کنید:\n\n/cancel برای لغو")
+    await cb.message.edit_text(
+        "💰 <b>شارژ دستی</b>\n\n"
+        "یوزرنیم یا آیدی عددی تلگرام کاربر را وارد کنید:\n\n"
+        "/cancel برای لغو",
+        parse_mode="HTML"
+    )
 
 
 @router.message(AdminState.manual_credit_uid)
@@ -453,23 +600,25 @@ async def adm_manual_credit_uid(msg: Message, state: FSMContext):
     if not await _is_admin(msg.from_user.id): return
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear(); await msg.answer("❌ لغو شد."); return
-    try:
-        tg_id = int(msg.text.strip())
-    except ValueError:
-        await msg.answer("❌ آیدی عددی وارد کنید."); return
-    from sqlalchemy import select
+    query = msg.text.strip().lstrip("@")
+    from sqlalchemy import select, or_
     from db.models import User as UserModel
     async with AsyncSessionLocal() as session:
-        res = await session.execute(select(UserModel).where(UserModel.telegram_id == tg_id))
-        u   = res.scalar_one_or_none()
+        if query.isdigit():
+            res = await session.execute(select(UserModel).where(UserModel.telegram_id == int(query)))
+            u   = res.scalar_one_or_none()
+        else:
+            res = await session.execute(select(UserModel).where(UserModel.username.ilike(f"%{query}%")))
+            users = res.scalars().all()
+            u = users[0] if users else None
     if not u:
         await msg.answer("❌ کاربر یافت نشد."); return
-    await state.update_data(credit_uid=u.id)
+    await state.update_data(credit_uid=u.id, credit_op="add")
     await state.set_state(AdminState.manual_credit_amt)
     await msg.answer(
-        f"👤 کاربر: <b>{u.display_name()}</b>\n"
-        f"💰 موجودی فعلی: <b>${float(u.balance or 0):.2f}</b>\n\n"
-        "مبلغ شارژ (دلار) را وارد کنید:\n\n/cancel برای لغو",
+        f"👤 <b>{u.display_name()}</b>  (@{u.username or u.telegram_id})\n"
+        f"💰 موجودی فعلی: <b>${float(u.balance or 0):.4f}</b>\n\n"
+        "مبلغ شارژ (دلار) را وارد کنید:\n/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -486,23 +635,149 @@ async def adm_user_orders(cb: CallbackQuery):
         u      = await get_user_by_id(session, uid)
     if not orders:
         await cb.message.edit_text(
-            "📦 این کاربر سفارشی ندارد.",
+            f"📦 <b>{u.display_name() if u else uid}</b>\n\nهیچ سفارشی ندارد.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_uid_{uid}")]
-            ])
+            ]),
+            parse_mode="HTML"
         ); return
-    ST = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","cancelled":"❌","failed":"💔"}
-    lines = []
-    for o in orders[:10]:
+    ST = {"pending":"⏳","processing":"🔄","in progress":"🔄",
+          "completed":"✅","partial":"⚠️","cancelled":"❌","failed":"💔","refunded":"↩️"}
+    total_spent = sum(float(o.sell_price or 0) for o in orders)
+    done        = sum(1 for o in orders if o.status == "completed")
+    rows = []
+    for o in orders[:15]:
         icon = ST.get(o.status, "🟡")
-        lines.append(f"{icon} #{o.id} | {o.service_name[:20]} | {o.quantity:,} | ${float(o.sell_price):.4f}")
+        rows.append(
+            f"{icon} <b>#{o.id}</b> {o.service_name[:22]}\n"
+            f"   🔢 {o.quantity:,}  💰 ${float(o.sell_price):.4f}  📅 {o.created_at.strftime('%m/%d %H:%M')}"
+        )
     await cb.message.edit_text(
-        f"📦 سفارشات <b>{u.display_name() if u else uid}</b>\n\n" + "\n".join(lines),
+        f"📦 <b>سفارشات {u.display_name() if u else uid}</b>\n"
+        f"📊 کل: {len(orders)}  ✅ {done}  💰 ${total_spent:.4f}\n\n"
+        + "\n\n".join(rows),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_uid_{uid}")]
         ]),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data.startswith("adm_utxns_"))
+async def adm_user_txns(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "users"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    uid = int(cb.data.split("_")[-1])
+    from services.deposit_service import get_user_transactions
+    async with AsyncSessionLocal() as session:
+        txns = await get_user_transactions(session, uid)
+        u    = await get_user_by_id(session, uid)
+    if not txns:
+        await cb.message.edit_text(
+            f"💳 <b>{u.display_name() if u else uid}</b>\n\nهیچ تراکنشی ندارد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_uid_{uid}")]
+            ]),
+            parse_mode="HTML"
+        ); return
+    TYPE_FA = {"deposit":"واریز","order":"سفارش","refund":"برگشت","manual":"دستی","debit":"کسر"}
+    ST_FA   = {"approved":"✅","pending":"⏳","rejected":"❌"}
+    rows    = []
+    for t in txns[:15]:
+        st   = ST_FA.get(t.status, "🟡")
+        tp   = TYPE_FA.get(t.type, t.type)
+        sign = "+" if t.type in ("deposit","refund","manual") else "-"
+        rows.append(
+            f"{st} <b>{sign}${float(t.amount):.4f}</b>  {tp}  "
+            f"<i>{t.created_at.strftime('%m/%d %H:%M')}</i>"
+        )
+    await cb.message.edit_text(
+        f"💳 <b>تراکنش‌های {u.display_name() if u else uid}</b>\n\n"
+        + "\n".join(rows),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_uid_{uid}")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_msg_"))
+async def adm_msg_start(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "users"):
+        await cb.answer("⛔️", show_alert=True); return
+    uid = int(cb.data.split("_")[-1])
+    async with AsyncSessionLocal() as session:
+        u = await get_user_by_id(session, uid)
+    if not u:
+        await cb.answer("کاربر یافت نشد!", show_alert=True); return
+    await state.update_data(msg_tgid=u.telegram_id, msg_uid=uid, msg_name=u.display_name())
+    await state.set_state(AdminState.broadcast_text)
+    await cb.answer()
+    await cb.message.edit_text(
+        f"✉️ <b>پیام مستقیم به {u.display_name()}</b>\n\n"
+        f"متن پیام را وارد کنید (HTML پشتیبانی می‌شود):\n\n/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_broadcast")
+async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "users"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    await state.update_data(msg_tgid=None, msg_uid=None, msg_name="همه کاربران")
+    await state.set_state(AdminState.broadcast_text)
+    await cb.message.edit_text(
+        "📤 <b>پیام همگانی</b>\n\n"
+        "متن پیام را وارد کنید (HTML پشتیبانی می‌شود):\n\n"
+        "/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.message(AdminState.broadcast_text)
+async def adm_broadcast_handle(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id): return
+    if msg.text and msg.text.strip() == "/cancel":
+        await state.clear(); await msg.answer("❌ لغو شد."); return
+    data = await state.get_data()
+    tgid = data.get("msg_tgid")
+    name = data.get("msg_name", "")
+    text = msg.text.strip()
+    await state.clear()
+    if tgid:
+        try:
+            await msg.bot.send_message(tgid, text, parse_mode="HTML")
+            await msg.answer(
+                f"✅ پیام به <b>{name}</b> ارسال شد.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="👤 پروفایل", callback_data=f"adm_uid_{data.get('msg_uid')}")]
+                ])
+            )
+        except Exception as e:
+            await msg.answer(f"❌ خطا در ارسال: {e}")
+    else:
+        from sqlalchemy import select
+        from db.models import User as UserModel
+        import asyncio
+        async with AsyncSessionLocal() as session:
+            res   = await session.execute(select(UserModel).where(UserModel.is_banned == False))
+            users = res.scalars().all()
+        sent = failed = 0
+        for u in users:
+            try:
+                await msg.bot.send_message(u.telegram_id, text, parse_mode="HTML")
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await msg.answer(
+            f"📤 <b>پیام همگانی ارسال شد</b>\n\n"
+            f"✅ موفق: <b>{sent}</b>  ❌ ناموفق: <b>{failed}</b>",
+            parse_mode="HTML"
+        )
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
