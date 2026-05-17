@@ -270,16 +270,15 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
             f"{'─'*30}\n"
             f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
             f"📊 قیمت لحظه‌ای: <b>{price_str}</b>\n"
-            f"💰 باید ارسال کنید: <b>{coin_str} {sym}</b>\n"
             f"🌐 شبکه: <b>{network}</b>\n"
             f"{'─'*30}\n\n"
+            f"💰 <b>مبلغ ارسالی:</b>\n"
+            f"<code>{coin_str} {sym}</code>\n\n"
             f"📤 <b>آدرس کیف پول:</b>\n"
             f"<code>{addr}</code>\n\n"
-            f"<i>👆 روی آدرس بالا ضربه بزنید تا کپی شود</i>",
+            f"<i>👆 روی هر مقدار ضربه بزنید تا کپی شود</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"📋 کپی مبلغ: {coin_str} {sym}", copy_text=coin_str)],
-                [InlineKeyboardButton(text="📋 کپی آدرس کیف پول",            copy_text=addr)],
-                [InlineKeyboardButton(text="❌ لغو واریز",                    callback_data="dep_cancel")],
+                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
             ]),
             parse_mode="HTML"
         )
@@ -293,7 +292,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
     except Exception as e:
         logger.exception(f"deposit_amount error: {e}")
         await msg.answer(
-            f"❌ خطای داخلی: <code>{type(e).__name__}: {str(e)[:200]}</code>\n\nلطفاً دوباره امتحان کنید.",
+            f"❌ خطای داخلی: <code>{type(e).__name__}: {str(e)[:200]}</code>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
             ]),
@@ -324,7 +323,7 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
             f"{'─'*30}\n"
             f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
             f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
-            f"🔗 هش: <code>{tx_hash[:40]}{'...' if len(tx_hash)>40 else ''}</code>\n"
+            f"🔗 هش:\n<code>{tx_hash[:60]}{'...' if len(tx_hash)>60 else ''}</code>\n"
             f"{'─'*30}\n\n"
             f"⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
