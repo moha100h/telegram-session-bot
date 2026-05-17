@@ -22,7 +22,7 @@ from services.order_service import (
     get_all_orders, get_order_by_id, update_order_status, process_refund,
     get_user_orders,
 )
-from services.settings_service import get_setting as gs, set_setting as ss
+from services.settings_service import get_setting as gs, set_setting as ss, get_coins, save_coins
 
 logger   = logging.getLogger("admin")
 router   = Router()
@@ -69,11 +69,13 @@ class AdminState(StatesGroup):
     manual_credit_uid  = State()
     manual_credit_amt  = State()
     search_user        = State()
-    search_order       = State()   # جستجوی سفارش با ID یا username
+    search_order       = State()
     broadcast_text     = State()
     add_admin_uid      = State()
     add_admin_role     = State()
     add_admin_perms    = State()
+    wallet_edit_addr   = State()
+    wallet_add_data    = State()
 
 
 def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
@@ -1312,36 +1314,55 @@ async def adm_wallets(cb: CallbackQuery):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
     async with AsyncSessionLocal() as session:
-        usdt_addr = await gs(session, "wallet_usdt",         "تنظیم نشده")
-        ton_addr  = await gs(session, "wallet_ton",          "تنظیم نشده")
-        trx_addr  = await gs(session, "wallet_trx",          "تنظیم نشده")
-        usdt_on   = await gs(session, "wallet_usdt_enabled", "1")
-        ton_on    = await gs(session, "wallet_ton_enabled",  "1")
-        trx_on    = await gs(session, "wallet_trx_enabled",  "1")
-    def _st(on): return "✅ فعال" if on == "1" else "❌ غیرفعال"
+        coins = await get_coins(session)
+    info_lines = []
+    for c in coins:
+        st    = "✅" if c.get("enabled") else "❌"
+        addr  = c.get("address", "")
+        short = (addr[:10] + "..." + addr[-6:]) if len(addr) > 20 else (addr or "تنظیم نشده")
+        info_lines.append(f"{c['icon']} <b>{c['label']}</b> {st}\n   <code>{short}</code>")
+    btns = []
+    for c in coins:
+        st_txt = "✅ فعال" if c.get("enabled") else "❌ غیرفعال"
+        btns.append([InlineKeyboardButton(
+            text=f"{c['icon']} {c['label']} — {st_txt}",
+            callback_data=f"adm_wcoin_{c['key']}"
+        )])
+    btns.append([InlineKeyboardButton(text="➕ افزودن ارز جدید", callback_data="adm_wadd")])
+    btns.append([InlineKeyboardButton(text="🔙 بازگشت",          callback_data="adm_settings")])
     await cb.message.edit_text(
-        f"💳 <b>مدیریت کیف پول‌ها</b>\n\n"
-        f"🟢 <b>USDT (TRC20)</b> — {_st(usdt_on)}\n"
-        f"<code>{usdt_addr}</code>\n\n"
-        f"💎 <b>TON</b> — {_st(ton_on)}\n"
-        f"<code>{ton_addr}</code>\n\n"
-        f"⚡ <b>TRX</b> — {_st(trx_on)}\n"
-        f"<code>{trx_addr}</code>\n\n"
-        f"<i>فقط کیف پول‌های فعال برای کاربران نمایش داده می‌شوند.</i>",
+        "💳 <b>مدیریت کیف پول‌ها</b>\n\n" + "\n\n".join(info_lines) +
+        "\n\n<i>فقط ارزهای فعال با آدرس تنظیم‌شده برای کاربران نمایش داده می‌شوند.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_wcoin_"))
+async def adm_wallet_coin(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    coin_key = cb.data.replace("adm_wcoin_", "")
+    async with AsyncSessionLocal() as session:
+        coins = await get_coins(session)
+    coin = next((c for c in coins if c["key"] == coin_key), None)
+    if not coin:
+        await cb.answer("❌ ارز یافت نشد.", show_alert=True); return
+    addr = coin.get("address", "تنظیم نشده")
+    st   = "✅ فعال" if coin.get("enabled") else "❌ غیرفعال"
+    await cb.message.edit_text(
+        f"{coin['icon']} <b>{coin['label']}</b>\n\n"
+        f"وضعیت: <b>{st}</b>\n"
+        f"شبکه: <b>{coin.get('network','—')}</b>\n"
+        f"آدرس:\n<code>{addr}</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"🟢 USDT — {'✅ فعال' if usdt_on=='1' else '❌ غیرفعال'}",
-                callback_data="adm_wtoggle_usdt")],
-            [InlineKeyboardButton(text="✏️ ویرایش آدرس USDT", callback_data="adm_wedit_usdt")],
-            [InlineKeyboardButton(
-                text=f"💎 TON — {'✅ فعال' if ton_on=='1' else '❌ غیرفعال'}",
-                callback_data="adm_wtoggle_ton")],
-            [InlineKeyboardButton(text="✏️ ویرایش آدرس TON",  callback_data="adm_wedit_ton")],
-            [InlineKeyboardButton(
-                text=f"⚡ TRX — {'✅ فعال' if trx_on=='1' else '❌ غیرفعال'}",
-                callback_data="adm_wtoggle_trx")],
-            [InlineKeyboardButton(text="✏️ ویرایش آدرس TRX",  callback_data="adm_wedit_trx")],
-            [InlineKeyboardButton(text="🔙 بازگشت",            callback_data="adm_settings")],
+                text="🔴 غیرفعال کن" if coin.get("enabled") else "🟢 فعال کن",
+                callback_data=f"adm_wtoggle_{coin_key}")],
+            [InlineKeyboardButton(text="✏️ ویرایش آدرس", callback_data=f"adm_wedit_{coin_key}")],
+            [InlineKeyboardButton(text="🗑 حذف این ارز",  callback_data=f"adm_wdel_{coin_key}")],
+            [InlineKeyboardButton(text="🔙 بازگشت",       callback_data="adm_wallets")],
         ]),
         parse_mode="HTML"
     )
@@ -1351,15 +1372,18 @@ async def adm_wallets(cb: CallbackQuery):
 async def adm_wallet_toggle(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "settings"):
         await cb.answer("⛔️", show_alert=True); return
-    coin = cb.data.split("adm_wtoggle_")[1]
-    key  = f"wallet_{coin}_enabled"
+    coin_key = cb.data.replace("adm_wtoggle_", "")
+    status = ""
     async with AsyncSessionLocal() as session:
-        cur = await gs(session, key, "1")
-        new = "0" if cur == "1" else "1"
-        await ss(session, key, new)
+        coins = await get_coins(session)
+        for c in coins:
+            if c["key"] == coin_key:
+                c["enabled"] = not c.get("enabled", True)
+                status = "✅ فعال شد" if c["enabled"] else "❌ غیرفعال شد"
+                break
+        await save_coins(session, coins)
         await session.commit()
-    status = "✅ فعال شد" if new == "1" else "❌ غیرفعال شد"
-    await cb.answer(f"{coin.upper()} {status}", show_alert=True)
+    await cb.answer(f"{coin_key.upper()} {status}", show_alert=True)
     await adm_wallets(cb)
 
 
@@ -1368,17 +1392,107 @@ async def adm_wallet_edit(cb: CallbackQuery, state: FSMContext):
     if not await _is_admin(cb.from_user.id, "settings"):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
-    coin   = cb.data.split("adm_wedit_")[1]
-    labels = {"usdt": "USDT (TRC20)", "ton": "TON", "trx": "TRX"}
-    label  = labels.get(coin, coin.upper())
+    coin_key = cb.data.replace("adm_wedit_", "")
     async with AsyncSessionLocal() as session:
-        current = await gs(session, f"wallet_{coin}", "—")
-    await state.update_data(setting_key=f"wallet_{coin}", setting_label=f"آدرس {label}", back_cb="adm_wallets")
-    await state.set_state(AdminState.set_setting_val)
+        coins = await get_coins(session)
+    coin = next((c for c in coins if c["key"] == coin_key), None)
+    if not coin:
+        await cb.answer("❌ ارز یافت نشد.", show_alert=True); return
+    await state.update_data(wallet_edit_key=coin_key)
+    await state.set_state(AdminState.wallet_edit_addr)
     await cb.message.edit_text(
-        f"✏️ <b>ویرایش آدرس {label}</b>\n\n"
-        f"آدرس فعلی:\n<code>{current}</code>\n\n"
-        f"آدرس جدید را وارد کنید:\n\n/cancel برای لغو",
+        f"✏️ <b>ویرایش آدرس {coin['icon']} {coin['label']}</b>\n\n"
+        f"آدرس فعلی:\n<code>{coin.get('address','—')}</code>\n\n"
+        f"آدرس جدید را وارد کنید:\n/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.message(AdminState.wallet_edit_addr)
+async def adm_wallet_edit_addr(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id): return
+    if msg.text and msg.text.strip() == "/cancel":
+        await state.clear(); await msg.answer("❌ لغو شد."); return
+    data     = await state.get_data()
+    coin_key = data.get("wallet_edit_key")
+    new_addr = (msg.text or "").strip()
+    async with AsyncSessionLocal() as session:
+        coins = await get_coins(session)
+        for c in coins:
+            if c["key"] == coin_key:
+                c["address"] = new_addr; break
+        await save_coins(session, coins)
+        await session.commit()
+    await state.clear()
+    await msg.answer(
+        f"✅ آدرس به‌روز شد:\n<code>{new_addr}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 مدیریت کیف پول‌ها", callback_data="adm_wallets")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_wdel_"))
+async def adm_wallet_del(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    coin_key = cb.data.replace("adm_wdel_", "")
+    async with AsyncSessionLocal() as session:
+        coins = await get_coins(session)
+        coins = [c for c in coins if c["key"] != coin_key]
+        await save_coins(session, coins)
+        await session.commit()
+    await cb.answer("🗑 ارز حذف شد.", show_alert=True)
+    await adm_wallets(cb)
+
+
+@router.callback_query(F.data == "adm_wadd")
+async def adm_wallet_add(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    await state.set_state(AdminState.wallet_add_data)
+    await cb.message.edit_text(
+        "➕ <b>افزودن ارز جدید</b>\n\n"
+        "اطلاعات را در قالب زیر ارسال کنید:\n\n"
+        "<code>کلید | نام نمایشی | شبکه | آدرس | ایموجی</code>\n\n"
+        "مثال‌ها:\n"
+        "<code>usdt_bep | USDT (BEP20) | BEP20 | 0xABC...123 | 🟡</code>\n"
+        "<code>bnb | BNB | BEP20 | 0xABC...123 | 🔶</code>\n"
+        "<code>eth | Ethereum | ERC20 | 0xABC...123 | 🔷</code>\n\n"
+        "/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.message(AdminState.wallet_add_data)
+async def adm_wallet_add_data(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id): return
+    if msg.text and msg.text.strip() == "/cancel":
+        await state.clear(); await msg.answer("❌ لغو شد."); return
+    parts = [p.strip() for p in (msg.text or "").split("|")]
+    if len(parts) < 4:
+        await msg.answer("❌ فرمت اشتباه. حداقل ۴ بخش با | جدا کنید."); return
+    key     = parts[0].lower().replace(" ", "_")
+    label   = parts[1]
+    network = parts[2]
+    address = parts[3]
+    icon    = parts[4] if len(parts) > 4 else "💰"
+    async with AsyncSessionLocal() as session:
+        coins = await get_coins(session)
+        if any(c["key"] == key for c in coins):
+            await msg.answer(f"❌ ارز با کلید <code>{key}</code> از قبل وجود دارد.", parse_mode="HTML"); return
+        coins.append({"key": key, "label": label, "icon": icon,
+                      "network": network, "address": address, "enabled": True})
+        await save_coins(session, coins)
+        await session.commit()
+    await state.clear()
+    await msg.answer(
+        f"✅ ارز {icon} <b>{label}</b> اضافه شد!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 مدیریت کیف پول‌ها", callback_data="adm_wallets")]
+        ]),
         parse_mode="HTML"
     )
 

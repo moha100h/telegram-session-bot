@@ -14,7 +14,7 @@ from db.database import AsyncSessionLocal
 from db.models import User
 from services.user_service import get_user, set_phone
 from services.deposit_service import create_deposit_request, get_user_transactions
-from services.settings_service import get_setting, get_wallets
+from services.settings_service import get_setting, get_wallets, get_active_coins
 from services.order_service import get_user_orders, get_order_by_id
 from services.smmpass import get_order_status
 
@@ -166,32 +166,46 @@ async def user_wallet(cb: CallbackQuery, db_user: User = None):
 @router.callback_query(F.data == "user_deposit")
 async def user_deposit_start(cb: CallbackQuery):
     await cb.answer()
+    async with AsyncSessionLocal() as session:
+        coins = await get_active_coins(session)
+    if not coins:
+        await cb.message.edit_text(
+            "⚠️ <b>هیچ روش پرداختی فعال نیست.</b>\n\nلطفاً با پشتیبانی تماس بگیرید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
+            ]),
+            parse_mode="HTML"
+        ); return
+    btns = [[InlineKeyboardButton(
+        text=f"{c['icon']} {c['label']}",
+        callback_data=f"dep_coin_{c['key']}"
+    )] for c in coins]
+    btns.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")])
     await cb.message.edit_text(
-        "💳 <b>واریز موجودی</b>\n\nروش پرداخت را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🟢 USDT (TRC20)", callback_data="dep_usdt")],
-            [InlineKeyboardButton(text="💎 TON",           callback_data="dep_ton")],
-            [InlineKeyboardButton(text="⚡ TRX",           callback_data="dep_trx")],
-            [InlineKeyboardButton(text="🏠 بازگشت",        callback_data="user_wallet")],
-        ]),
+        "💳 <b>واریز موجودی</b>\n\n"
+        "ارز مورد نظر را انتخاب کنید:\n\n"
+        "<i>💡 مبلغ به دلار وارد می‌شود — معادل ارز به‌صورت لحظه‌ای محاسبه می‌شود.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
         parse_mode="HTML"
     )
 
 
-@router.callback_query(F.data.in_({"dep_usdt", "dep_ton", "dep_trx"}))
-async def user_deposit_method(cb: CallbackQuery, state: FSMContext):
-    method_map = {"dep_usdt": "USDT", "dep_ton": "TON", "dep_trx": "TRX"}
-    method = method_map[cb.data]
-    await state.update_data(deposit_method=method)
-    await state.set_state(UserState.deposit_amount)
+@router.callback_query(F.data.startswith("dep_coin_"))
+async def user_deposit_coin(cb: CallbackQuery, state: FSMContext):
+    coin_key = cb.data.replace("dep_coin_", "")
     await cb.answer()
     async with AsyncSessionLocal() as session:
-        wallets = await get_wallets(session)
-    wallet_addr = wallets.get(method.lower(), "—")
+        coins = await get_active_coins(session)
+    coin = next((c for c in coins if c["key"] == coin_key), None)
+    if not coin:
+        await cb.answer("❌ این ارز دیگر فعال نیست.", show_alert=True); return
+    await state.update_data(deposit_coin=coin)
+    await state.set_state(UserState.deposit_amount)
     await cb.message.edit_text(
-        f"💳 <b>واریز {method}</b>\n\n"
-        f"📤 آدرس کیف پول:\n<code>{wallet_addr}</code>\n\n"
-        f"⚠️ پس از واریز، مبلغ دلاری را وارد کنید:\n\n/cancel برای لغو",
+        f"{coin['icon']} <b>واریز {coin['label']}</b>\n\n"
+        f"💵 مبلغ مورد نظر را به <b>دلار</b> وارد کنید:\n"
+        f"<i>(مثال: 10 یا 25.5)</i>\n\n"
+        f"/cancel برای لغو",
         parse_mode="HTML"
     )
 
@@ -204,39 +218,92 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         amount = float(msg.text.strip().replace(",", ""))
         if amount <= 0: raise ValueError
     except ValueError:
-        await msg.answer("❌ مبلغ معتبر وارد کنید (مثال: 10.5)"); return
-    await state.update_data(deposit_amount=amount)
+        await msg.answer("❌ مبلغ معتبر وارد کنید (مثال: 10 یا 25.5)"); return
+
+    data     = await state.get_data()
+    coin     = data.get("deposit_coin", {})
+    coin_key = coin.get("key", "usdt_trc")
+
+    from services.price_service import usd_to_coin, format_amount, get_price_usd
+    price_usd   = await get_price_usd(coin_key)
+    coin_amount = await usd_to_coin(amount, coin_key)
+    if coin_amount is None:
+        await msg.answer("⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید."); return
+
+    coin_str  = format_amount(coin_amount, coin_key)
+    price_str = f"${price_usd:,.4f}" if price_usd and price_usd < 100 else f"${price_usd:,.2f}" if price_usd else "—"
+    addr      = coin.get("address", "—")
+    label     = coin.get("label", "")
+    icon      = coin.get("icon", "💳")
+    network   = coin.get("network", "")
+    sym       = label.split()[0]
+
+    await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str)
     await state.set_state(UserState.deposit_hash)
+
     await msg.answer(
-        f"✅ مبلغ: <b>${amount:.2f}</b>\n\n"
-        f"📝 هش تراکنش (TX Hash) را وارد کنید:\n\n/cancel برای لغو",
+        f"{icon} <b>واریز {label}</b>\n"
+        f"{'─'*30}\n"
+        f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
+        f"📊 قیمت لحظه‌ای: <b>{price_str}</b>\n"
+        f"💰 باید ارسال کنید: <b>{coin_str} {sym}</b>\n"
+        f"🌐 شبکه: <b>{network}</b>\n"
+        f"{'─'*30}\n\n"
+        f"📤 <b>آدرس کیف پول:</b>\n"
+        f"<code>{addr}</code>\n\n"
+        f"<i>👆 روی آدرس بالا ضربه بزنید تا کپی شود</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"📋 کپی مبلغ ارسالی: {coin_str} {sym}", copy_text=coin_str)],
+            [InlineKeyboardButton(text=f"📋 کپی آدرس کیف پول", copy_text=addr)],
+            [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")],
+        ]),
         parse_mode="HTML"
     )
+    await msg.answer(
+        "✅ پس از واریز، <b>هش تراکنش (TX Hash)</b> را ارسال کنید:\n\n/cancel برای لغو",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "dep_cancel")
+async def dep_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer("❌ لغو شد.", show_alert=True)
+    try: await cb.message.delete()
+    except Exception: pass
 
 
 @router.message(UserState.deposit_hash)
 async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
     if msg.text and msg.text.strip() == "/cancel":
         await state.clear(); await msg.answer("❌ لغو شد."); return
-    data    = await state.get_data()
-    amount  = data.get("deposit_amount", 0)
-    method  = data.get("deposit_method", "USDT")
-    tx_hash = (msg.text or "").strip()
+    data     = await state.get_data()
+    amount   = data.get("deposit_amount", 0)
+    coin     = data.get("deposit_coin", {})
+    coin_str = data.get("deposit_coin_amount", "")
+    method   = coin.get("label", "USDT")
+    addr     = coin.get("address", "")
+    tx_hash  = (msg.text or "").strip()
     async with AsyncSessionLocal() as session:
-        await create_deposit_request(session, db_user.id, amount, method, tx_hash)
+        await create_deposit_request(session, db_user.id, amount, method, tx_hash, addr)
         await session.commit()
     await state.clear()
+    sym = method.split()[0]
     await msg.answer(
-        f"✅ <b>درخواست واریز ثبت شد!</b>\n\n"
-        f"💵 مبلغ: <b>${amount:.2f}</b>\n"
-        f"🔧 روش: <b>{method}</b>\n"
-        f"🔗 هش: <code>{tx_hash[:30]}...</code>\n\n"
-        "⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
+        f"✅ <b>درخواست واریز ثبت شد!</b>\n"
+        f"{'─'*30}\n"
+        f"💵 مبلغ: <b>${amount:,.2f}</b>\n"
+        f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
+        f"🔗 هش: <code>{tx_hash[:40]}{'...' if len(tx_hash)>40 else ''}</code>\n"
+        f"{'─'*30}\n\n"
+        f"⏳ پس از تایید ادمین، موجودی شما شارژ می‌شود.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")]
+            [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="user_home")]
         ]),
         parse_mode="HTML"
     )
+
+
 
 
 # ── Transactions ──────────────────────────────────────────────────────────────
