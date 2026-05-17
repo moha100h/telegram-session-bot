@@ -16,9 +16,10 @@ from aiogram.types import (
 
 from db.database import init_db
 from middlewares.auth_middleware import AuthMiddleware
-from handlers.user_handler    import router as user_router
-from handlers.admin_handler   import router as admin_router
-from handlers.smmpass_handler import router as smmpass_router
+from handlers.user_handler       import router as user_router
+from handlers.admin_handler      import router as admin_router
+from handlers.smmpass_handler    import router as smmpass_router
+from handlers.force_join_handler import router as force_join_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +82,7 @@ async def main():
     dp.callback_query.middleware(AuthMiddleware())
 
     # Routers — order matters!
+    dp.include_router(force_join_router)  # force-join verify (FIRST — bypass auth)
     dp.include_router(user_router)        # /start, user panel, deposit, orders
     dp.include_router(admin_router)       # admin panel
     dp.include_router(smmpass_router)     # SMM ordering flow

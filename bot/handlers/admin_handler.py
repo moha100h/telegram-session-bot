@@ -1257,6 +1257,10 @@ SETTING_KEYS = {
     "adm_set_markup":      ("smm_markup_percent", "درصد سود SMM"),
     "adm_set_apikey":      ("smmpass_api_key",    "API Key سمس‌پس"),
     "adm_set_auto_cancel": ("order_auto_cancel_hours", "ساعت کنسل خودکار سفارش"),
+    "adm_fj_channel":      ("force_join_channel",    "آیدی کانال (مثلاً @mychannel)"),
+    "adm_fj_text":         ("force_join_text",       "متن پیام عضویت اجباری"),
+    "adm_fj_btn_join":     ("force_join_btn_text",   "متن دکمه عضویت"),
+    "adm_fj_btn_verify":   ("force_join_verify_text","متن دکمه تأیید عضویت"),
 }
 
 
@@ -1292,6 +1296,7 @@ async def adm_settings(cb: CallbackQuery):
              InlineKeyboardButton(text="🚀 نام دکمه SMM",   callback_data="adm_set_smm_title")],
             [InlineKeyboardButton(text="🔑 API Key سمس‌پس", callback_data="adm_set_apikey"),
              InlineKeyboardButton(text="⏰ کنسل خودکار",    callback_data="adm_set_auto_cancel")],
+            [InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join")],
             [InlineKeyboardButton(text="🔙 بازگشت",         callback_data="menu_admin")],
         ]),
         parse_mode="HTML"
@@ -1339,6 +1344,57 @@ async def adm_setting_val(msg: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+
+
+
+# ── Force-Join Admin Panel ─────────────────────────────────────────────────────
+@router.callback_query(F.data == "adm_force_join")
+async def adm_force_join(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        enabled = await gs(session, "force_join_enabled", "0")
+        channel = await gs(session, "force_join_channel", "—")
+        text    = await gs(session, "force_join_text",    "—")
+        btn_j   = await gs(session, "force_join_btn_text",   "—")
+        btn_v   = await gs(session, "force_join_verify_text","—")
+
+    status_icon = "🟢 فعال" if enabled == "1" else "🔴 غیرفعال"
+    toggle_text = "🔴 غیرفعال کردن" if enabled == "1" else "🟢 فعال کردن"
+
+    await cb.message.edit_text(
+        f"📢 <b>عضویت اجباری</b>\n\n"
+        f"وضعیت: <b>{status_icon}</b>\n"
+        f"📌 کانال: <code>{channel}</code>\n"
+        f"📝 متن پیام: <i>{text[:60]}{'...' if len(text)>60 else ''}</i>\n"
+        f"🔘 دکمه عضویت: <b>{btn_j}</b>\n"
+        f"✅ دکمه تأیید: <b>{btn_v}</b>\n\n"
+        f"<i>⚠️ بات باید ادمین کانال باشد تا عضویت را بررسی کند.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=toggle_text,             callback_data="adm_fj_toggle")],
+            [InlineKeyboardButton(text="📌 تنظیم کانال",        callback_data="adm_fj_channel"),
+             InlineKeyboardButton(text="📝 متن پیام",           callback_data="adm_fj_text")],
+            [InlineKeyboardButton(text="🔘 متن دکمه عضویت",    callback_data="adm_fj_btn_join"),
+             InlineKeyboardButton(text="✅ متن دکمه تأیید",     callback_data="adm_fj_btn_verify")],
+            [InlineKeyboardButton(text="🔙 بازگشت",             callback_data="adm_settings")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "adm_fj_toggle")
+async def adm_fj_toggle(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    async with AsyncSessionLocal() as session:
+        current = await gs(session, "force_join_enabled", "0")
+        new_val = "0" if current == "1" else "1"
+        await ss(session, "force_join_enabled", new_val)
+        await session.commit()
+    status = "🟢 فعال شد" if new_val == "1" else "🔴 غیرفعال شد"
+    await cb.answer(f"عضویت اجباری {status}", show_alert=True)
+    await adm_force_join(cb)
 
 # ── SMMPass Admin ─────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm_smmpass")
