@@ -41,9 +41,9 @@ class UserState(StatesGroup):
     deposit_method = State()
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 پنل SMM",        callback_data="menu_smmpass")],
+        [InlineKeyboardButton(text=smm_title,            callback_data="menu_smmpass")],
         [InlineKeyboardButton(text="💰 کیف پول",        callback_data="user_wallet"),
          InlineKeyboardButton(text="📦 سفارش‌های من",   callback_data="user_orders")],
         [InlineKeyboardButton(text="👤 پروفایل",        callback_data="user_profile"),
@@ -72,13 +72,15 @@ async def cmd_start(msg: Message, state: FSMContext,
             parse_mode="HTML"
         )
         return
+    async with AsyncSessionLocal() as _s:
+        smm_title = await get_setting(_s, "smm_panel_title", "🛒 پنل SMM")
     await msg.answer(
         f"🚀 <b>{bot_name}</b>\n\n"
         f"👋 {welcome}\n"
         f"👤 <b>{name}</b>\n"
         f"💰 موجودی: <b>${bal:.2f}</b>\n\n"
         "یک بخش را انتخاب کنید:",
-        reply_markup=main_menu_kb(),
+        reply_markup=await main_menu_kb(smm_title),
         parse_mode="HTML"
     )
 
@@ -91,11 +93,13 @@ async def user_home(cb: CallbackQuery, state: FSMContext, db_user: User = None):
         bot_name = await get_setting(session, "bot_name", "SMM Panel")
     name = db_user.display_name() if db_user else "User"
     bal  = float(db_user.balance or 0) if db_user else 0
+    async with AsyncSessionLocal() as _s:
+        smm_title = await get_setting(_s, "smm_panel_title", "🛒 پنل SMM")
     await cb.message.edit_text(
         f"🚀 <b>{bot_name}</b>\n"
         f"👤 <b>{name}</b> | 💰 <b>${bal:.2f}</b>\n\n"
         "یک بخش را انتخاب کنید:",
-        reply_markup=main_menu_kb(),
+        reply_markup=await main_menu_kb(smm_title),
         parse_mode="HTML"
     )
 

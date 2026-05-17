@@ -224,82 +224,122 @@ async def sp_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: User = No
 
 
 # ── Order flow ────────────────────────────────────────────────────────────────
+
+TYPE_PROMPTS = {
+    "default":            ("🔗", "لینک پست یا پروفایل را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "package":            ("🔗", "لینک کانال یا پروفایل را وارد کنید:", "مثال: https://t.me/yourchannel"),
+    "poll":               ("🗳", "لینک پست نظرسنجی را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "mentions_hashtag":   ("🔗", "لینک پست تلگرام را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "mentions_custom":    ("🔗", "لینک پست تلگرام را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "mentions_followers": ("🔗", "لینک پست تلگرام را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "custom_comments":    ("🔗", "لینک پست تلگرام را وارد کنید:", "مثال: https://t.me/channel/123"),
+    "comment_likes":      ("💬", "لینک کامنت را وارد کنید:", "مثال: https://t.me/channel/123?comment=456"),
+}
+TYPE_EXTRA_PROMPTS = {
+    "custom_comments": ("✏️", "کامنت‌ها را وارد کنید:", "هر خط یک کامنت — مثال:\nعالیه!\nخیلی خوب بود"),
+    "mentions_custom": ("👤", "یوزرنیم‌ها را وارد کنید:", "هر خط یک یوزرنیم — مثال:\nuser1\nuser2"),
+}
+
+def _cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ لغو سفارش", callback_data="sp_cancel")]
+    ])
+
+
 @router.callback_query(F.data == "sp_start_order")
 async def sp_start_order(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
-    data     = await state.get_data()
-    svc_type = data.get("sp_type", "default")
+    data      = await state.get_data()
+    svc_type  = data.get("sp_type", "default")
+    svc_name  = data.get("sp_svc_name", "")
+    min_q     = data.get("sp_min", 1)
+    max_q     = data.get("sp_max", 1000000)
+    sell_rate = data.get("sp_sell_rate", data.get("sp_rate", 0))
     if svc_type == "subscription":
         await state.set_state(SPState.sub_username)
         await cb.message.edit_text(
-            "📌 <b>اشتراک</b>\n\nیوزرنیم کانال یا گروه را وارد کنید (بدون @):\n\n/cancel برای لغو",
-            parse_mode="HTML"
-        )
-        return
+            f"📌 <b>اشتراک — {svc_name[:40]}</b>\n{'━'*28}\n\n"
+            f"👤 یوزرنیم کانال یا گروه را وارد کنید:\n<i>(بدون @ — مثال: mychannel)</i>",
+            reply_markup=_cancel_kb(), parse_mode="HTML"
+        ); return
+    icon, title, hint = TYPE_PROMPTS.get(svc_type, TYPE_PROMPTS["default"])
     await state.set_state(SPState.order_link)
-    hints = {
-        "package": "لینک کانال یا پست", "poll": "لینک پست نظرسنجی",
-        "mentions_hashtag": "لینک پست تلگرام", "mentions_custom": "لینک پست تلگرام",
-        "custom_comments": "لینک پست تلگرام", "comment_likes": "لینک کامنت",
-    }
     await cb.message.edit_text(
-        f"🔗 <b>لینک را وارد کنید:</b>\n<i>{hints.get(svc_type, 'لینک پست یا کانال تلگرام')}</i>\n\n/cancel برای لغو",
-        parse_mode="HTML"
+        f"{icon} <b>{title}</b>\n{'━'*28}\n\n"
+        f"🛒 سرویس: <i>{svc_name[:45]}</i>\n"
+        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n"
+        f"📊 حداقل: <b>{min_q:,}</b> | حداکثر: <b>{max_q:,}</b>\n\n"
+        f"<i>{hint}</i>",
+        reply_markup=_cancel_kb(), parse_mode="HTML"
     )
 
 
 @router.message(SPState.order_link)
 async def sp_got_link(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     link = (msg.text or "").strip()
     if not link:
-        await msg.answer("❌ لینک معتبر وارد کنید."); return
+        await msg.answer("❌ لینک معتبر وارد کنید.", reply_markup=_cancel_kb()); return
     await state.update_data(sp_link=link)
     data     = await state.get_data()
     svc_type = data.get("sp_type", "default")
+    svc_name = data.get("sp_svc_name", "")
     if svc_type == "package":
         await _show_confirm(msg, state); return
-    if svc_type in ("custom_comments", "mentions_custom"):
+    if svc_type in TYPE_EXTRA_PROMPTS:
         await state.set_state(SPState.order_extra)
-        label = "کامنت‌ها (هر خط یک کامنت)" if svc_type == "custom_comments" else "یوزرنیم‌ها (هر خط یک یوزرنیم)"
-        await msg.answer(f"✏️ <b>{label}:</b>\n\n/cancel برای لغو", parse_mode="HTML"); return
+        icon, title, hint = TYPE_EXTRA_PROMPTS[svc_type]
+        await msg.answer(
+            f"{icon} <b>{title}</b>\n{'━'*28}\n\n"
+            f"🛒 سرویس: <i>{svc_name[:45]}</i>\n\n<i>{hint}</i>",
+            reply_markup=_cancel_kb(), parse_mode="HTML"
+        ); return
     await state.set_state(SPState.order_qty)
-    min_q = data.get("sp_min", 1); max_q = data.get("sp_max", 1000000)
+    min_q     = data.get("sp_min", 1)
+    max_q     = data.get("sp_max", 1000000)
     sell_rate = data.get("sp_sell_rate", data.get("sp_rate", 0))
     await msg.answer(
-        f"🔢 <b>تعداد را وارد کنید:</b>\n\nحداقل: <b>{min_q:,}</b>  |  حداکثر: <b>{max_q:,}</b>\n"
-        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n\n/cancel برای لغو",
-        parse_mode="HTML"
+        f"🔢 <b>تعداد را وارد کنید:</b>\n{'━'*28}\n\n"
+        f"📊 حداقل: <b>{min_q:,}</b> | حداکثر: <b>{max_q:,}</b>\n"
+        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n\n"
+        f"<i>فقط عدد وارد کنید — مثال: 1000</i>",
+        reply_markup=_cancel_kb(), parse_mode="HTML"
     )
 
 
 @router.message(SPState.order_extra)
 async def sp_got_extra(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
-    await state.update_data(sp_extra=(msg.text or "").strip())
+    extra = (msg.text or "").strip()
+    if not extra:
+        await msg.answer("❌ مقدار نمی‌تواند خالی باشد.", reply_markup=_cancel_kb()); return
+    await state.update_data(sp_extra=extra)
+    data      = await state.get_data()
+    min_q     = data.get("sp_min", 1)
+    max_q     = data.get("sp_max", 1000000)
+    sell_rate = data.get("sp_sell_rate", data.get("sp_rate", 0))
     await state.set_state(SPState.order_qty)
-    data = await state.get_data()
-    min_q = data.get("sp_min", 1); max_q = data.get("sp_max", 1000000)
     await msg.answer(
-        f"🔢 تعداد را وارد کنید:\nحداقل: <b>{min_q:,}</b>  |  حداکثر: <b>{max_q:,}</b>\n\n/cancel برای لغو",
-        parse_mode="HTML"
+        f"🔢 <b>تعداد را وارد کنید:</b>\n{'━'*28}\n\n"
+        f"📊 حداقل: <b>{min_q:,}</b> | حداکثر: <b>{max_q:,}</b>\n"
+        f"💰 قیمت: <b>${sell_rate:.4f}</b> / هر ۱۰۰۰\n\n"
+        f"<i>فقط عدد وارد کنید — مثال: 1000</i>",
+        reply_markup=_cancel_kb(), parse_mode="HTML"
     )
 
 
 @router.message(SPState.order_qty)
 async def sp_got_qty(msg: Message, state: FSMContext, db_user: User = None):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     try:
         qty = int((msg.text or "").strip().replace(",", "").replace("\u060c", ""))
     except ValueError:
-        await msg.answer("❌ عدد صحیح وارد کنید."); return
-    data = await state.get_data()
-    min_q = data.get("sp_min", 1); max_q = data.get("sp_max", 1000000)
+        await msg.answer("❌ عدد صحیح وارد کنید.", reply_markup=_cancel_kb()); return
+    data  = await state.get_data()
+    min_q = data.get("sp_min", 1)
+    max_q = data.get("sp_max", 1000000)
     if qty < min_q or qty > max_q:
-        await msg.answer(f"❌ تعداد باید بین {min_q:,} و {max_q:,} باشد."); return
+        await msg.answer(
+            f"❌ تعداد باید بین <b>{min_q:,}</b> و <b>{max_q:,}</b> باشد.",
+            reply_markup=_cancel_kb(), parse_mode="HTML"
+        ); return
     await state.update_data(sp_qty=qty)
     await _show_confirm(msg, state, db_user=db_user)
 
@@ -307,18 +347,28 @@ async def sp_got_qty(msg: Message, state: FSMContext, db_user: User = None):
 async def _show_confirm(msg: Message, state: FSMContext, db_user: User = None):
     data      = await state.get_data()
     name      = data.get("sp_svc_name", "")
+    svc_type  = data.get("sp_type", "default")
     link      = data.get("sp_link", "")
     qty       = data.get("sp_qty", 1)
+    extra     = data.get("sp_extra", "")
     rate      = data.get("sp_rate", 0)
     markup    = data.get("sp_markup", 0.0)
     total     = _total(rate, qty, markup)
-    bal    = float(db_user.balance or 0) if db_user else 0
-    bal_ok = bal >= total
+    bal       = float(db_user.balance or 0) if db_user else 0
+    bal_ok    = bal >= total
+    type_label= TYPE_LABELS.get(svc_type, svc_type)
     text = (
-        f"📋 <b>تایید سفارش</b>\n\n"
+        f"📋 <b>تایید سفارش</b>\n{'━'*28}\n"
         f"🛒 سرویس: <b>{name[:45]}</b>\n"
+        f"🔧 نوع: <b>{type_label}</b>\n"
         f"🔗 لینک: <code>{link}</code>\n"
-        f"🔢 تعداد: <b>{qty:,}</b>\n"
+    )
+    if svc_type != "package":
+        text += f"🔢 تعداد: <b>{qty:,}</b>\n"
+    if extra:
+        text += f"✏️ محتوا: <i>{extra[:60]}{'...' if len(extra)>60 else ''}</i>\n"
+    text += (
+        f"{'━'*28}\n"
         f"💰 هزینه: <b>${total:.4f}</b>\n"
         f"💳 موجودی: <b>${bal:.2f}</b>\n\n"
     )
@@ -328,11 +378,10 @@ async def _show_confirm(msg: Message, state: FSMContext, db_user: User = None):
         rows.append([InlineKeyboardButton(text="✅ تایید و پرداخت", callback_data="sp_confirm")])
     else:
         rows.append([InlineKeyboardButton(text="💳 شارژ موجودی", callback_data="user_deposit")])
-    rows.append([InlineKeyboardButton(text="❌ لغو", callback_data="sp_cancel")])
+    rows.append([InlineKeyboardButton(text="❌ لغو سفارش", callback_data="sp_cancel")])
     await msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
-# ── Confirm & Place ───────────────────────────────────────────────────────────
 @router.callback_query(F.data == "sp_confirm")
 async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None):
     await cb.answer()
@@ -364,11 +413,17 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
             ]),
             parse_mode="HTML"
         ); return
-    await cb.message.edit_text("⏳ در حال ثبت سفارش...")
+    await cb.message.edit_text("⏳ <b>در حال ثبت سفارش...</b>", parse_mode="HTML")
     async with AsyncSessionLocal() as session:
         ok = await deduct_balance(session, db_user.id, total)
         if not ok:
-            await cb.message.edit_text("❌ خطا در کسر موجودی. دوباره تلاش کنید."); return
+            await cb.message.edit_text(
+                "❌ خطا در کسر موجودی. دوباره تلاش کنید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 تلاش مجدد", callback_data="sp_confirm")],
+                    [InlineKeyboardButton(text="🏠 بازگشت",     callback_data="user_home")],
+                ])
+            ); return
         await session.commit()
         try:
             if svc_type == "package":
@@ -377,7 +432,7 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
                 res = await add_order_custom_comments(int(svc_id), link, extra)
             elif svc_type == "mentions_custom":
                 res = await add_order_mentions_custom(int(svc_id), link, extra)
-            elif svc_type == "mentions_hashtag":
+            elif svc_type in ("mentions_hashtag", "mentions_followers"):
                 res = await add_order_mentions_hashtag(int(svc_id), link, qty)
             elif svc_type == "subscription":
                 res = await add_order_subscription(int(svc_id), link, data.get("sp_sub_min", 1), qty)
@@ -389,6 +444,10 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
             await session.commit()
             await cb.message.edit_text(
                 f"❌ <b>خطا در API:</b>\n<code>{str(e)[:200]}</code>\n\nموجودی برگردانده شد.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
+                    [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home")],
+                ]),
                 parse_mode="HTML"
             ); return
         order = await create_order(
@@ -399,13 +458,13 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
         )
     await state.clear()
     await cb.message.edit_text(
-        f"✅ <b>سفارش ثبت شد!</b>\n\n"
+        f"✅ <b>سفارش با موفقیت ثبت شد!</b>\n{'━'*28}\n"
         f"🆔 شناسه: <b>#{order.id}</b>\n"
         f"🌐 شناسه API: <code>{ext_id}</code>\n"
         f"🛒 سرویس: <b>{svc_name[:40]}</b>\n"
         f"🔢 تعداد: <b>{qty:,}</b>\n"
-        f"💰 پرداخت: <b>${total:.4f}</b>\n\n"
-        "⏳ سفارش در صف پردازش است.",
+        f"💰 پرداخت: <b>${total:.4f}</b>\n{'━'*28}\n\n"
+        f"⏳ سفارش در صف پردازش است.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📦 سفارشات من", callback_data="sp_my_orders")],
             [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
@@ -418,73 +477,59 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
 @router.callback_query(F.data == "sp_cancel")
 async def sp_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.answer("لغو شد.")
+    await cb.answer()
     await cb.message.edit_text(
-        "❌ سفارش لغو شد.",
+        "❌ <b>سفارش لغو شد.</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 بازگشت", callback_data="menu_smmpass")]
-        ])
+            [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
+            [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="menu_smmpass")],
+        ]),
+        parse_mode="HTML"
     )
 
 
 # ── Subscription ──────────────────────────────────────────────────────────────
 @router.message(SPState.sub_username)
 async def sp_sub_user(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
-    await state.update_data(sp_link=msg.text.strip().lstrip("@"))
+    username = (msg.text or "").strip().lstrip("@")
+    if not username:
+        await msg.answer("❌ یوزرنیم معتبر وارد کنید.", reply_markup=_cancel_kb()); return
+    await state.update_data(sp_link=username)
     await state.set_state(SPState.sub_min)
-    await msg.answer("🔢 حداقل تعداد در روز:\n\n/cancel برای لغو")
+    await msg.answer(
+        f"🔢 <b>حداقل تعداد در روز:</b>\n{'━'*28}\n\n<i>عدد صحیح وارد کنید — مثال: 10</i>",
+        reply_markup=_cancel_kb(), parse_mode="HTML"
+    )
+
 
 @router.message(SPState.sub_min)
 async def sp_sub_min(msg: Message, state: FSMContext):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
     try:
-        mn = int(msg.text.strip())
+        mn = int((msg.text or "").strip())
+        if mn <= 0: raise ValueError
     except ValueError:
-        await msg.answer("❌ عدد صحیح وارد کنید."); return
+        await msg.answer("❌ عدد صحیح مثبت وارد کنید.", reply_markup=_cancel_kb()); return
     await state.update_data(sp_sub_min=mn)
     await state.set_state(SPState.sub_max)
-    await msg.answer("🔢 حداکثر تعداد در روز:\n\n/cancel برای لغو")
+    await msg.answer(
+        f"🔢 <b>حداکثر تعداد در روز:</b>\n{'━'*28}\n\n<i>باید بیشتر از حداقل ({mn:,}) باشد</i>",
+        reply_markup=_cancel_kb(), parse_mode="HTML"
+    )
+
 
 @router.message(SPState.sub_max)
 async def sp_sub_max(msg: Message, state: FSMContext, db_user: User = None):
-    if msg.text and msg.text.strip() == "/cancel":
-        await state.clear(); await msg.answer("❌ لغو شد."); return
+    data = await state.get_data()
+    mn   = data.get("sp_sub_min", 1)
     try:
-        mx = int(msg.text.strip())
+        mx = int((msg.text or "").strip())
+        if mx <= mn: raise ValueError
     except ValueError:
-        await msg.answer("❌ عدد صحیح وارد کنید."); return
+        await msg.answer(f"❌ عدد باید بیشتر از {mn:,} باشد.", reply_markup=_cancel_kb()); return
     await state.update_data(sp_qty=mx)
     await _show_confirm(msg, state, db_user=db_user)
 
 
-# ── My orders ─────────────────────────────────────────────────────────────────
-def _my_orders_kb(orders: list, page: int = 0) -> InlineKeyboardMarkup:
-    """کیبورد سفارشات کاربر با صفحه‌بندی ۸ تایی."""
-    PAGE = 8
-    chunk = orders[page * PAGE: (page + 1) * PAGE]
-    buttons = []
-    for o in chunk:
-        icon = STATUS_ICONS.get(o.status, "🟡")
-        name = (o.service_name or "")[:22]
-        buttons.append([InlineKeyboardButton(
-            text=f"{icon} #{o.id} | {name} | {o.quantity:,}",
-            callback_data=f"sp_order_{o.id}"
-        )])
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"sp_orders_pg_{page-1}"))
-    if (page + 1) * PAGE < len(orders):
-        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"sp_orders_pg_{page+1}"))
-    if nav:
-        buttons.append(nav)
-    buttons.append([
-        InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0"),
-        InlineKeyboardButton(text="🏠 بازگشت",      callback_data="menu_smmpass"),
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 @router.callback_query(F.data == "sp_my_orders")
