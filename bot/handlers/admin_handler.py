@@ -5,7 +5,7 @@ Deposits, users, orders, settings, SMMPass, broadcast, admin management.
 import json
 import logging
 import os
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -1612,7 +1612,7 @@ async def adm_order_live(cb: CallbackQuery):
 # ── کنسل دستی — تأیید ────────────────────────────────────────────────────────
 # ── ثبت مجدد سفارش قدیمی در API ────────────────────────────────────────────
 @router.callback_query(F.data.startswith("adm_order_resubmit_"))
-async def adm_order_resubmit(cb: CallbackQuery, bot: Bot):
+async def adm_order_resubmit(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "orders"):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer("⏳ در حال ثبت در API...")
