@@ -182,7 +182,10 @@ async def restore_from_zip(zip_bytes, verify_checksum=""):
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf: zf.extractall(tmp)
         except Exception as e: result["errors"].append(f"zip: {e}"); return result
         mp = os.path.join(tmp,"metadata.json")
-        result["metadata"] = json.load(open(mp)) if os.path.exists(mp) else {}
+        try:
+            result["metadata"] = json.load(open(mp)) if os.path.exists(mp) else {}
+        except Exception:
+            result["metadata"] = {}
         dd = os.path.join(tmp,"db")
         sqls = sorted(Path(dd).glob("*.sql.gz")) if os.path.exists(dd) else []
         if sqls:
@@ -243,6 +246,7 @@ async def _scheduler_loop(bot):
                 iv  = await get_setting(s,"backup_interval_hours","1")
                 ena = await get_setting(s,"backup_auto_enabled","1")
             if ena != "1": await asyncio.sleep(300); continue
+            iv = iv or "1"
             await asyncio.sleep(max(1,int(iv))*3600)
             zb,fn,st = await create_backup("auto")
             sent = await send_backup_to_group(bot,zb,fn,st)
@@ -252,7 +256,15 @@ async def _scheduler_loop(bot):
                 await set_setting(s,"last_backup_status","\u2705 OK" if sent else "\u26a0\ufe0f saved locally")
                 await s.commit()
         except asyncio.CancelledError: break
-        except Exception as e: logger.error(f"Scheduler error: {e}"); await asyncio.sleep(600)
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+            try:
+                async with AsyncSessionLocal() as _es:
+                    await set_setting(_es, "last_backup_time", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+                    await set_setting(_es, "last_backup_status", f"\u274c {str(e)[:80]}")
+                    await _es.commit()
+            except Exception: pass
+            await asyncio.sleep(600)
 
 def start_scheduler(bot):
     global _scheduler_task

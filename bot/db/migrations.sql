@@ -93,4 +93,6 @@ DO $$ BEGIN
     THEN ALTER TABLE orders ADD COLUMN api_order_id VARCHAR(64); END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='updated_at')
     THEN ALTER TABLE orders ADD COLUMN updated_at TIMESTAMP DEFAULT NOW(); END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='panel_name')
+    THEN ALTER TABLE orders ADD COLUMN panel_name VARCHAR(64); END IF;
 END $$;

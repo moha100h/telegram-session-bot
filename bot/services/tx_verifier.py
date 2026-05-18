@@ -126,7 +126,7 @@ async def verify_bsc(txid: str, expected_addr: str) -> TxResult:
         is_real     = False
         if input_data.startswith("0xa9059cbb") and len(input_data) >= 138:
             to_addr_raw = "0x" + input_data[34:74]
-            amount      = int(input_data[74:138], 16) / 1e18
+            amount      = (int(input_data[74:138], 16) if len(input_data) >= 138 else 0) / 1e18
             contract    = tx.get("to", "").lower()
             is_real     = contract == "0x55d398326f99059ff775485246999027b3197955"
             if not is_real:
