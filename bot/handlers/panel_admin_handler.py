@@ -66,6 +66,7 @@ class PanelAdminState(StatesGroup):
     edit_value         = State()
     # partial refund
     partial_qty        = State()
+    grp_partial_qty = State()  # عدد تکمیل جزئی از گروه
 
 
 class PanelOrderSearchState(StatesGroup):
@@ -763,6 +764,10 @@ async def _apply_group_status(msg: Message, bot: Bot, order_id: int, status: str
             try: await msg.reply(f"❌ سفارش #{order_id} یافت نشد.")
             except Exception: pass
             return
+        if order.status in ("completed", "rejected", "partial"):
+            try: await msg.reply(f"⛔️ سفارش #{order_id} نهایی شده و قابل تغییر نیست.")
+            except Exception: pass
+            return
         refund = 0.0
         if status == "rejected":
             refund = await process_panel_refund(s, order, completed_qty=0)
@@ -1274,14 +1279,15 @@ async def noop_handler(cb: CallbackQuery):
 
 
 
-# ── تغییر وضعیت سفارش از دکمه‌های گروه ─────────────────────────────────────
+
+
+# ── تغییر وضعیت سفارش از دکمه‌های inline گروه ──────────────────────────────
 @router.callback_query(F.data.regexp(r"^adm_grp_porder_\d+_\d+_\w+$"))
-async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot):
+async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot, state: FSMContext):
     """callback از دکمه‌های inline پیام گروه"""
     if not await _is_admin(cb.from_user.id):
         await cb.answer("⛔️ فقط ادمین‌ها می‌توانند وضعیت را تغییر دهند.", show_alert=True); return
     parts  = cb.data.split("_")
-    # adm_grp_porder_{oid}_{pid}_{status}
     oid    = int(parts[3])
     pid    = int(parts[4])
     status = parts[5]
@@ -1293,32 +1299,68 @@ async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot):
             await cb.answer("❌ سفارش یافت نشد!", show_alert=True); return
         if order.status in ("completed", "rejected", "partial"):
             await cb.answer("⛔️ این سفارش نهایی شده و قابل تغییر نیست.", show_alert=True); return
+    # ── تکمیل جزئی: نیاز به عدد داره → FSM ──
+    if status == "partial":
+        await state.update_data(
+            grp_partial_oid=oid,
+            grp_partial_pid=pid,
+            grp_partial_msg_id=cb.message.message_id,
+            grp_partial_chat_id=cb.message.chat.id,
+        )
+        await state.set_state(PanelAdminState.grp_partial_qty)
+        await cb.answer()
+        try:
+            await cb.message.reply(
+                f"⚠️ <b>تکمیل جزئی — سفارش #{oid}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "چند عدد انجام شد؟ (عدد بفرست)\n"
+                "<i>مثال: 500</i>",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+        return
+    # ── سایر وضعیت‌ها: مستقیم اعمال ──
+    await _apply_grp_inline(cb, bot, oid, pid, status)
+
+
+async def _apply_grp_inline(cb: CallbackQuery, bot: Bot, oid: int, pid: int, status: str,
+                             partial_qty: int = None):
+    """اعمال وضعیت از دکمه inline گروه + آپدیت پیام + نوتیف کاربر"""
+    from sqlalchemy import select
+    from db.models import PanelOrder, User
+    SEP = "━" * 28
+    async with AsyncSessionLocal() as s:
+        order = await get_panel_order(s, oid)
+        if not order: return
         refund = 0.0
         if status == "rejected":
             refund = await process_panel_refund(s, order, completed_qty=0)
-        await update_panel_order_status(s, oid, status)
+        elif status == "partial" and partial_qty is not None:
+            refund = await process_panel_refund(s, order, completed_qty=partial_qty)
+        await update_panel_order_status(s, oid, status, completed_qty=partial_qty)
         await s.commit()
         ur = await s.execute(select(User).where(User.id == order.user_id))
         user = ur.scalar_one_or_none()
         user_tg = user.telegram_id if user else None
         bal     = float(user.balance) if user else 0
-    STATUS_FA   = {"pending":"در انتظار","processing":"در حال انجام",
-                   "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+        svc_name    = order.service_name or ""
+        quantity    = order.quantity
+        total_price = float(order.total_price)
+    STATUS_FA    = {"pending":"در انتظار","processing":"در حال انجام",
+                    "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
     STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
     icon      = STATUS_ICONS.get(status, "📌")
     status_fa = STATUS_FA.get(status, status)
-    await cb.answer(f"✅ وضعیت → {status_fa}")
-    # آپدیت پیام گروه
     _is_final = status in ("completed", "rejected", "partial")
+    # ── متن آپدیت پیام گروه ──
     _new_text = (
-        f"🆕 <b>سفارش #{oid}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 خدمت: <b>{(order.service_name or '')[:50]}</b>\n"
-        f"🔗 لینک: <code>{(order.link or '')[:100]}</code>\n"
-        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
-        f"💰 مبلغ: <b>${float(order.total_price):.4f}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆕 <b>سفارش #{oid}</b>\n" + SEP + "\n"
+        f"📌 خدمت: <b>{svc_name[:50]}</b>\n"
+        f"🔢 تعداد: <b>{quantity:,}</b>\n"
+        f"💰 مبلغ: <b>${total_price:.4f}</b>\n"
+        + SEP + "\n"
         f"{icon} وضعیت: <b>{status_fa}</b>"
+        + (f"\n✅ انجام‌شده: <b>{partial_qty:,}</b>" if partial_qty is not None else "")
         + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
     )
     _kb_new = None if _is_final else InlineKeyboardMarkup(inline_keyboard=[
@@ -1333,12 +1375,97 @@ async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot):
     ])
     try:
         await cb.message.edit_text(_new_text, parse_mode="HTML", reply_markup=_kb_new)
-    except Exception as _e:
-        pass
-    # نوتیف کاربر
+    except Exception: pass
+    await cb.answer(f"✅ وضعیت → {status_fa}")
+    # ── نوتیف کاربر با جزئیات کامل ──
     if user_tg:
-        await notify_order_status(bot, user_tg, oid, order.service_name or "", status,
-                                  quantity=order.quantity, refund=refund)
-        if refund > 0:
-            await notify_refund(bot, user_tg, refund, oid, "رد شدن سفارش", bal)
+        _notif = (
+            f"📦 <b>سفارش #{oid} — {status_fa}</b>\n" + SEP + "\n"
+            f"📌 خدمت: <b>{svc_name[:50]}</b>\n"
+            f"🔢 تعداد سفارش: <b>{quantity:,}</b>\n"
+            + (f"✅ انجام‌شده: <b>{partial_qty:,}</b>\n" if partial_qty is not None else "")
+            + (f"❌ انجام‌نشده: <b>{quantity - (partial_qty or 0):,}</b>\n" if partial_qty is not None else "")
+            + SEP + "\n"
+            f"💰 مبلغ پرداختی: <b>${total_price:.4f}</b>\n"
+            + (f"↩️ بازگشت به کیف پول: <b>${refund:.4f}</b>\n" if refund > 0 else "")
+            + (f"💳 موجودی جدید: <b>${bal:.4f}</b>\n" if refund > 0 else "")
+        )
+        try:
+            await bot.send_message(user_tg, _notif, parse_mode="HTML")
+        except Exception: pass
+
+
+# ── دریافت عدد تکمیل جزئی از گروه (FSM) ────────────────────────────────────
+@router.message(PanelAdminState.grp_partial_qty)
+async def adm_grp_partial_qty(msg: Message, state: FSMContext, bot: Bot):
+    try:
+        qty = int((msg.text or "").strip())
+        if qty < 0: raise ValueError
+    except ValueError:
+        await msg.reply("❌ عدد صحیح غیرمنفی وارد کنید."); return
+    data = await state.get_data()
+    oid  = data.get("grp_partial_oid")
+    pid  = data.get("grp_partial_pid")
+    msg_id  = data.get("grp_partial_msg_id")
+    chat_id = data.get("grp_partial_chat_id")
+    await state.clear()
+    # ساخت یک CallbackQuery مصنوعی نداریم — مستقیم apply می‌کنیم
+    from aiogram.types import Chat, Message as AioMsg
+    from db.models import PanelOrder, User
+    from sqlalchemy import select
+    SEP = "━" * 28
+    async with AsyncSessionLocal() as s:
+        order = await get_panel_order(s, oid)
+        if not order: await msg.reply("❌ سفارش یافت نشد."); return
+        refund = await process_panel_refund(s, order, completed_qty=qty)
+        await update_panel_order_status(s, oid, "partial", completed_qty=qty)
+        await s.commit()
+        ur = await s.execute(select(User).where(User.id == order.user_id))
+        user = ur.scalar_one_or_none()
+        user_tg = user.telegram_id if user else None
+        bal     = float(user.balance) if user else 0
+        svc_name    = order.service_name or ""
+        quantity    = order.quantity
+        total_price = float(order.total_price)
+    # آپدیت پیام گروه
+    _new_text = (
+        f"🆕 <b>سفارش #{oid}</b>\n" + SEP + "\n"
+        f"📌 خدمت: <b>{svc_name[:50]}</b>\n"
+        f"🔢 تعداد: <b>{quantity:,}</b>\n"
+        f"💰 مبلغ: <b>${total_price:.4f}</b>\n"
+        + SEP + "\n"
+        f"⚠️ وضعیت: <b>تکمیل جزئی</b>\n"
+        f"✅ انجام‌شده: <b>{qty:,}</b>\n"
+        + (f"↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
+    )
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id,
+            text=_new_text, parse_mode="HTML", reply_markup=None
+        )
+    except Exception: pass
+    try: await msg.delete()
+    except Exception: pass
+    await msg.answer(
+        f"✅ <b>تکمیل جزئی ثبت شد — سفارش #{oid}</b>\n"
+        f"انجام‌شده: <b>{qty:,}</b> از <b>{quantity:,}</b>\n"
+        + (f"↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else ""),
+        parse_mode="HTML"
+    )
+    # نوتیف کاربر با جزئیات کامل
+    if user_tg:
+        _notif = (
+            f"📦 <b>سفارش #{oid} — تکمیل جزئی ⚠️</b>\n" + SEP + "\n"
+            f"📌 خدمت: <b>{svc_name[:50]}</b>\n"
+            f"🔢 تعداد سفارش: <b>{quantity:,}</b>\n"
+            f"✅ انجام‌شده: <b>{qty:,}</b>\n"
+            f"❌ انجام‌نشده: <b>{quantity - qty:,}</b>\n"
+            + SEP + "\n"
+            f"💰 مبلغ پرداختی: <b>${total_price:.4f}</b>\n"
+            + (f"↩️ بازگشت به کیف پول: <b>${refund:.4f}</b>\n" if refund > 0 else "")
+            + (f"💳 موجودی جدید: <b>${bal:.4f}</b>" if refund > 0 else "")
+        )
+        try:
+            await bot.send_message(user_tg, _notif, parse_mode="HTML")
+        except Exception: pass
 
