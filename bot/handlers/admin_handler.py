@@ -1040,7 +1040,7 @@ async def adm_orders(cb: CallbackQuery):
     from db.models import PanelOrder, Panel
     async with AsyncSessionLocal() as session:
         panels_res = await session.execute(
-            select(Panel).where(Panel.is_active == True).order_by(Panel.order_index)
+            select(Panel).order_by(Panel.order_index)
         )
         panels = list(panels_res.scalars().all())
         st_res = await session.execute(
@@ -1088,7 +1088,9 @@ async def adm_orders(cb: CallbackQuery):
         p_total  = ps.total if ps else 0
         p_active = ps.active if ps else 0
         p_done   = ps.done if ps else 0
-        btn_text = p.button_label + "  📦" + str(p_total) + "  ⏳" + str(p_active) + "  ✅" + str(p_done)
+        status_icon = "" if p.is_active else "🔴 "
+        btn_text = (status_icon + p.button_label + "  📦" + str(p_total)
+                    + "  ⏳" + str(p_active) + "  ✅" + str(p_done))
         rows.append([InlineKeyboardButton(text=btn_text, callback_data="adm_porders_panel_" + str(p.id))])
     if not panels:
         rows.append([InlineKeyboardButton(text="⚠️ هیچ پنلی فعال نیست", callback_data="noop")])
