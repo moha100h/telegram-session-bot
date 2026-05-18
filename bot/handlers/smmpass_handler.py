@@ -450,11 +450,13 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
                 ]),
                 parse_mode="HTML"
             ); return
+        panel_title = await get_setting(session, "smm_panel_title", "SMMPass")
         order = await create_order(
             session, user_id=db_user.id, service_id=int(svc_id),
             service_name=svc_name, link=link, quantity=qty,
             cost_price=round(rate * qty / 1000, 6), sell_price=total,
             api_order_id=ext_id if ext_id else None,
+            panel_name=panel_title,
         )
     await state.clear()
     await cb.message.edit_text(

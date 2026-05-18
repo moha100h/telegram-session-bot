@@ -39,6 +39,7 @@ async def create_order(
     cost_price: float,
     sell_price: float,
     api_order_id: str = None,
+    panel_name: str = None,
 ) -> Order:
     order = Order(
         user_id      = user_id,
@@ -50,6 +51,7 @@ async def create_order(
         sell_price   = sell_price,
         status       = "pending",
         api_order_id = api_order_id,
+        panel_name   = panel_name,
     )
     session.add(order)
     await session.commit()
@@ -67,11 +69,13 @@ async def place_order(
     cost_price: float,
     sell_price: float,
     api_order_id: str = None,
+    panel_name: str = None,
 ) -> Order:
     return await create_order(
         session, user_id, service_id, service_name,
         link, quantity, cost_price, sell_price,
         api_order_id=api_order_id,
+        panel_name=panel_name,
     )
 
 
