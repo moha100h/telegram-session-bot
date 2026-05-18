@@ -1037,64 +1037,54 @@ async def adm_orders(cb: CallbackQuery):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
     from sqlalchemy import select, func
-    from db.models import PanelOrder, Panel
+    from db.models import PanelOrder, Order as SmmOrder
     async with AsyncSessionLocal() as session:
-        panels_res = await session.execute(
-            select(Panel).order_by(Panel.order_index)
-        )
-        panels = list(panels_res.scalars().all())
-        st_res = await session.execute(
+        # آمار panel_orders
+        p_res = await session.execute(
             select(
                 func.count(PanelOrder.id).label("total"),
                 func.sum(PanelOrder.total_price).label("revenue"),
                 func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
                 func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("completed"),
-                func.count(PanelOrder.id).filter(PanelOrder.status == "partial").label("partial"),
-                func.count(PanelOrder.id).filter(PanelOrder.status == "rejected").label("rejected"),
             )
         )
-        st = st_res.one()
-        panel_stats = {}
-        for p in panels:
-            ps_res = await session.execute(
-                select(
-                    func.count(PanelOrder.id).label("total"),
-                    func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
-                    func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("done"),
-                ).where(PanelOrder.panel_id == p.id)
+        ps = p_res.one()
+        # آمار smm orders
+        s_res = await session.execute(
+            select(
+                func.count(SmmOrder.id).label("total"),
+                func.sum(SmmOrder.sell_price).label("revenue"),
+                func.count(SmmOrder.id).filter(SmmOrder.status.in_(["pending","processing","in progress"])).label("active"),
+                func.count(SmmOrder.id).filter(SmmOrder.status == "completed").label("completed"),
             )
-            panel_stats[p.id] = ps_res.one()
+        )
+        ss = s_res.one()
     SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    total     = st.total or 0
-    revenue   = float(st.revenue or 0)
-    active    = st.active or 0
-    completed = st.completed or 0
-    partial   = st.partial or 0
-    rejected  = st.rejected or 0
+    p_total = ps.total or 0
+    p_rev   = float(ps.revenue or 0)
+    p_act   = ps.active or 0
+    p_done  = ps.completed or 0
+    s_total = ss.total or 0
+    s_rev   = float(ss.revenue or 0)
+    s_act   = ss.active or 0
+    s_done  = ss.completed or 0
     text = (
-        "📦 <b>سفارشات پنل‌ها</b>\n" + SEP + "\n"
-        + "📊 کل: <b>" + str(total) + "</b>  |  "
-        + "⏳ فعال: <b>" + str(active) + "</b>  |  "
-        + "✅ تکمیل: <b>" + str(completed) + "</b>\n"
-        + ("⚠️ جزئی: <b>" + str(partial) + "</b>  |  " if partial else "")
-        + "❌ رد: <b>" + str(rejected) + "</b>\n"
-        + "💰 درآمد کل: <b>$" + f"{revenue:.4f}" + "</b>\n"
+        "📦 <b>سفارشات</b>\n" + SEP + "\n"
+        + "🎛 <b>پنل‌های دستی</b>\n"
+        + "  📊 کل: <b>" + str(p_total) + "</b>  ⏳ فعال: <b>" + str(p_act) + "</b>  ✅ تکمیل: <b>" + str(p_done) + "</b>\n"
+        + "  💰 درآمد: <b>$" + f"{p_rev:.4f}" + "</b>\n"
         + SEP + "\n"
-        + "یک پنل را انتخاب کنید 👇"
+        + "🚀 <b>SMMPass (اتوماتیک)</b>\n"
+        + "  📊 کل: <b>" + str(s_total) + "</b>  ⏳ فعال: <b>" + str(s_act) + "</b>  ✅ تکمیل: <b>" + str(s_done) + "</b>\n"
+        + "  💰 درآمد: <b>$" + f"{s_rev:.4f}" + "</b>\n"
+        + SEP + "\n"
+        + "یک بخش را انتخاب کنید 👇"
     )
-    rows = []
-    for p in panels:
-        ps = panel_stats.get(p.id)
-        p_total  = ps.total if ps else 0
-        p_active = ps.active if ps else 0
-        p_done   = ps.done if ps else 0
-        status_icon = "" if p.is_active else "🔴 "
-        btn_text = (status_icon + p.button_label + "  📦" + str(p_total)
-                    + "  ⏳" + str(p_active) + "  ✅" + str(p_done))
-        rows.append([InlineKeyboardButton(text=btn_text, callback_data="adm_porders_panel_" + str(p.id))])
-    if not panels:
-        rows.append([InlineKeyboardButton(text="⚠️ هیچ پنلی فعال نیست", callback_data="noop")])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
+    rows = [
+        [InlineKeyboardButton(text="🎛 سفارشات پنل‌های دستی", callback_data="adm_panel_orders_hub")],
+        [InlineKeyboardButton(text="🚀 سفارشات SMMPass", callback_data="adm_smm_orders")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")],
+    ]
     await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
@@ -1194,6 +1184,166 @@ async def _render_panel_orders(cb, pid: int, flt: str):
         InlineKeyboardButton(text="⚠️ جزئی",  callback_data=f"adm_porders_f_{pid}_partial"),
         InlineKeyboardButton(text="🗒 همه",    callback_data=f"adm_porders_f_{pid}_all"),
         InlineKeyboardButton(text="🔍 سرچ",    callback_data=f"adm_porder_search_{pid}"),
+    ])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_panel_orders_hub")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm_panel_orders_hub")
+async def adm_panel_orders_hub(cb: CallbackQuery):
+    """لیست پنل‌های دستی با آمار — ورودی از adm_orders"""
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    from sqlalchemy import select, func
+    from db.models import PanelOrder, Panel
+    async with AsyncSessionLocal() as session:
+        panels_res = await session.execute(select(Panel).order_by(Panel.order_index))
+        panels = list(panels_res.scalars().all())
+        st_res = await session.execute(
+            select(
+                func.count(PanelOrder.id).label("total"),
+                func.sum(PanelOrder.total_price).label("revenue"),
+                func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("completed"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "partial").label("partial"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "rejected").label("rejected"),
+            )
+        )
+        st = st_res.one()
+        panel_stats = {}
+        for p in panels:
+            ps_res = await session.execute(
+                select(
+                    func.count(PanelOrder.id).label("total"),
+                    func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
+                    func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("done"),
+                ).where(PanelOrder.panel_id == p.id)
+            )
+            panel_stats[p.id] = ps_res.one()
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    total     = st.total or 0
+    revenue   = float(st.revenue or 0)
+    active    = st.active or 0
+    completed = st.completed or 0
+    partial   = st.partial or 0
+    rejected  = st.rejected or 0
+    text = (
+        "🎛 <b>سفارشات پنل‌های دستی</b>\n" + SEP + "\n"
+        + "📊 کل: <b>" + str(total) + "</b>  |  "
+        + "⏳ فعال: <b>" + str(active) + "</b>  |  "
+        + "✅ تکمیل: <b>" + str(completed) + "</b>\n"
+        + ("⚠️ جزئی: <b>" + str(partial) + "</b>  |  " if partial else "")
+        + "❌ رد: <b>" + str(rejected) + "</b>\n"
+        + "💰 درآمد: <b>$" + f"{revenue:.4f}" + "</b>\n"
+        + SEP + "\n"
+        + "یک پنل را انتخاب کنید 👇"
+    )
+    rows = []
+    for p in panels:
+        ps = panel_stats.get(p.id)
+        p_total  = ps.total if ps else 0
+        p_active = ps.active if ps else 0
+        p_done   = ps.done if ps else 0
+        status_icon = "" if p.is_active else "🔴 "
+        btn_text = status_icon + p.button_label + "  📦" + str(p_total) + "  ⏳" + str(p_active) + "  ✅" + str(p_done)
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data="adm_porders_panel_" + str(p.id))])
+    if not panels:
+        rows.append([InlineKeyboardButton(text="⚠️ هیچ پنلی وجود ندارد", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_panel_orders_hub")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm_smm_orders")
+async def adm_smm_orders(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    await _render_smm_orders(cb, "active")
+
+
+@router.callback_query(F.data.regexp(r"^adm_smm_f_\w+$"))
+async def adm_smm_orders_filter(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    flt = cb.data.split("_", 3)[3]
+    await _render_smm_orders(cb, flt)
+
+
+async def _render_smm_orders(cb, flt: str):
+    from sqlalchemy import select, func
+    from db.models import Order as SmmOrder
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","in progress":"🔄","completed":"✅","partial":"⚠️","cancelled":"❌","rejected":"❌"}
+    FILTER_MAP = {
+        "active":    [SmmOrder.status.in_(["pending","processing","in progress"])],
+        "pending":   [SmmOrder.status == "pending"],
+        "processing":[SmmOrder.status.in_(["processing","in progress"])],
+        "completed": [SmmOrder.status == "completed"],
+        "partial":   [SmmOrder.status == "partial"],
+        "cancelled": [SmmOrder.status.in_(["cancelled","rejected"])],
+        "all":       [],
+    }
+    FILTER_LABELS = {
+        "active":"⏳ فعال","pending":"⏳ در صف","processing":"🔄 در انجام",
+        "completed":"✅ تکمیل","partial":"⚠️ جزئی","cancelled":"❌ کنسل","all":"🗒 همه"
+    }
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    async with AsyncSessionLocal() as s:
+        st_res = await s.execute(
+            select(
+                func.count(SmmOrder.id).label("total"),
+                func.sum(SmmOrder.sell_price).label("revenue"),
+                func.count(SmmOrder.id).filter(SmmOrder.status.in_(["pending","processing","in progress"])).label("active"),
+                func.count(SmmOrder.id).filter(SmmOrder.status == "completed").label("completed"),
+                func.count(SmmOrder.id).filter(SmmOrder.status == "partial").label("partial"),
+                func.count(SmmOrder.id).filter(SmmOrder.status.in_(["cancelled","rejected"])).label("cancelled"),
+            )
+        )
+        st = st_res.one()
+        extra = FILTER_MAP.get(flt, [])
+        q = select(SmmOrder)
+        for f in extra: q = q.where(f)
+        q = q.order_by(SmmOrder.created_at.desc()).limit(25)
+        res = await s.execute(q)
+        orders = list(res.scalars().all())
+    total     = st.total or 0
+    revenue   = float(st.revenue or 0)
+    active    = st.active or 0
+    completed = st.completed or 0
+    partial   = st.partial or 0
+    cancelled = st.cancelled or 0
+    cur_label = FILTER_LABELS.get(flt, flt)
+    text = (
+        "🚀 <b>سفارشات SMMPass</b>\n" + SEP + "\n"
+        + "📊 کل: <b>" + str(total) + "</b>  |  "
+        + "⏳ فعال: <b>" + str(active) + "</b>  |  "
+        + "✅ تکمیل: <b>" + str(completed) + "</b>\n"
+        + ("⚠️ جزئی: <b>" + str(partial) + "</b>  |  " if partial else "")
+        + "❌ کنسل: <b>" + str(cancelled) + "</b>\n"
+        + "💰 درآمد: <b>$" + f"{revenue:.4f}" + "</b>\n"
+        + SEP + "\n"
+        + "فیلتر: <b>" + cur_label + "</b>  —  " + str(len(orders)) + " سفارش"
+    )
+    rows = []
+    for o in orders:
+        icon = STATUS_ICONS.get(o.status, "📌")
+        svc  = (o.service_name or "")[:20]
+        rows.append([InlineKeyboardButton(
+            text=icon + " #" + str(o.id) + " | " + svc + " | $" + f"{o.sell_price:.3f}",
+            callback_data="adm_order_" + str(o.id)
+        )])
+    if not orders:
+        rows.append([InlineKeyboardButton(text="— سفارشی در این دسته نیست —", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(text="⏳ فعال",    callback_data="adm_smm_f_active"),
+        InlineKeyboardButton(text="✅ تکمیل",   callback_data="adm_smm_f_completed"),
+        InlineKeyboardButton(text="❌ کنسل",    callback_data="adm_smm_f_cancelled"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="⚠️ جزئی",    callback_data="adm_smm_f_partial"),
+        InlineKeyboardButton(text="🗒 همه",      callback_data="adm_smm_f_all"),
+        InlineKeyboardButton(text="🔍 سرچ",      callback_data="adm_order_search"),
     ])
     rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_orders")])
     await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
