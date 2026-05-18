@@ -1312,12 +1312,12 @@ async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot):
     _is_final = status in ("completed", "rejected", "partial")
     _new_text = (
         f"🆕 <b>سفارش #{oid}</b>\n"
-        f"{"━"*28}\n"
-        f"📌 خدمت: <b>{(order.service_name or "")[:50]}</b>\n"
-        f"🔗 لینک: <code>{(order.link or "")[:100]}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 خدمت: <b>{(order.service_name or '')[:50]}</b>\n"
+        f"🔗 لینک: <code>{(order.link or '')[:100]}</code>\n"
         f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
         f"💰 مبلغ: <b>${float(order.total_price):.4f}</b>\n"
-        f"{"━"*28}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{icon} وضعیت: <b>{status_fa}</b>"
         + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
     )
