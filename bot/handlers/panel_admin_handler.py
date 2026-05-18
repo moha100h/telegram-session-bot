@@ -239,6 +239,7 @@ async def adm_panel_detail(cb: CallbackQuery):
         )])
     rows += [
         [InlineKeyboardButton(text="➕ افزودن دسته‌بندی", callback_data=f"adm_panel_addcat_{pid}")],
+        [InlineKeyboardButton(text="📦 سفارشات ۲۴ ساعت",  callback_data=f"adm_panel_orders_{pid}")],
         [InlineKeyboardButton(text="✏️ ویرایش دکمه",      callback_data=f"adm_panel_editlabel_{pid}"),
          InlineKeyboardButton(text="👥 تنظیم گروه",        callback_data=f"adm_panel_setgroup_{pid}")],
         [InlineKeyboardButton(
@@ -358,11 +359,23 @@ async def adm_panel_edit_value(msg: Message, state: FSMContext):
         elif pid:
             await update_panel(s, pid, **{field: val})
         await s.commit()
+    # بازگشت هوشمند
+    if svc_id:
+        back_cb = f"adm_psvc_{svc_id}"
+        back_txt = "🔙 بازگشت به خدمت"
+    elif cat_id:
+        back_cb = f"adm_pcat_{cat_id}"
+        back_txt = "🔙 بازگشت به دسته"
+    elif pid:
+        back_cb = f"adm_panel_{pid}"
+        back_txt = "🔙 بازگشت به پنل"
+    else:
+        back_cb = "adm_panels"
+        back_txt = "🔙 بازگشت"
     await msg.answer(
         "✅ <b>تغییرات ذخیره شد.</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت به پنل",
-             callback_data=f"adm_panel_{pid or ''}")],
+            [InlineKeyboardButton(text=back_txt, callback_data=back_cb)],
         ]),
         parse_mode="HTML"
     )
@@ -765,3 +778,313 @@ async def group_order_reply(msg: Message, bot: Bot):
                 u  = ur.scalar_one_or_none()
                 bal = float(u.balance) if u else 0
             await notify_refund(bot, user_tg, refund, order_id, "رد شدن سفارش", bal)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# بخش ۷ — سفارشات پنل (ادمین)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data.regexp(r"^adm_panel_orders_\d+$"))
+async def adm_panel_orders(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    pid = int(cb.data.split("_")[-1])
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from db.models import PanelOrder, Panel
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(select(Panel).where(Panel.id == pid))
+        panel = res.scalar_one_or_none()
+        since = datetime.utcnow() - timedelta(hours=24)
+        res2 = await s.execute(
+            select(PanelOrder)
+            .where(PanelOrder.panel_id == pid, PanelOrder.created_at >= since)
+            .order_by(PanelOrder.created_at.desc())
+            .limit(20)
+        )
+        orders = list(res2.scalars().all())
+    panel_name = panel.button_label if panel else f"#{pid}"
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    rows = []
+    for o in orders:
+        icon = STATUS_ICONS.get(o.status, "📌")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} — {(o.service_name or '')[:20]} — ${o.total_price:.3f}",
+            callback_data=f"adm_porder_{o.id}_{pid}"
+        )])
+    rows.append([
+        InlineKeyboardButton(text="🔍 جستجو سفارش", callback_data=f"adm_porder_search_{pid}"),
+        InlineKeyboardButton(text="📋 همه سفارشات", callback_data=f"adm_porder_all_{pid}"),
+    ])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data=f"adm_panel_{pid}")])
+    await cb.message.edit_text(
+        f"📦 <b>سفارشات {panel_name}</b> — ۲۴ ساعت اخیر\n{'━'*28}\n"
+        f"تعداد: <b>{len(orders)}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_porder_all_\d+$"))
+async def adm_panel_orders_all(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    pid = int(cb.data.split("_")[-1])
+    from sqlalchemy import select
+    from db.models import PanelOrder, Panel
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(select(Panel).where(Panel.id == pid))
+        panel = res.scalar_one_or_none()
+        res2 = await s.execute(
+            select(PanelOrder)
+            .where(PanelOrder.panel_id == pid)
+            .order_by(PanelOrder.created_at.desc())
+            .limit(30)
+        )
+        orders = list(res2.scalars().all())
+    panel_name = panel.button_label if panel else f"#{pid}"
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    rows = []
+    for o in orders:
+        icon = STATUS_ICONS.get(o.status, "📌")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} — {(o.service_name or '')[:20]} — ${o.total_price:.3f}",
+            callback_data=f"adm_porder_{o.id}_{pid}"
+        )])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_panel_orders_{pid}")])
+    await cb.message.edit_text(
+        f"📦 <b>همه سفارشات {panel_name}</b>\n{'━'*28}\n"
+        f"تعداد (آخرین ۳۰): <b>{len(orders)}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+class PanelOrderSearchState(StatesGroup):
+    query = State()
+
+
+@router.callback_query(F.data.regexp(r"^adm_porder_search_\d+$"))
+async def adm_porder_search_start(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    pid = int(cb.data.split("_")[-1])
+    await state.update_data(search_panel_id=pid)
+    await state.set_state(PanelOrderSearchState.query)
+    await cb.answer()
+    await cb.message.edit_text(
+        "🔍 <b>جستجوی سفارش</b>\n{'━'*28}\n\n"
+        "شناسه سفارش، یوزرنیم یا بخشی از اسم خدمت را وارد کنید:",
+        reply_markup=_cancel_kb(f"adm_panel_orders_{pid}"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(PanelOrderSearchState.query)
+async def adm_porder_search_handle(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    pid  = data.get("search_panel_id", 0)
+    q    = (msg.text or "").strip()
+    await state.clear()
+    from sqlalchemy import select, or_
+    from db.models import PanelOrder, User
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    async with AsyncSessionLocal() as s:
+        # جستجو بر اساس ID یا اسم خدمت
+        filters = [PanelOrder.panel_id == pid]
+        if q.isdigit():
+            filters.append(PanelOrder.id == int(q))
+            res = await s.execute(select(PanelOrder).where(*filters).limit(10))
+        else:
+            res = await s.execute(
+                select(PanelOrder)
+                .where(PanelOrder.panel_id == pid,
+                       PanelOrder.service_name.ilike(f"%{q}%"))
+                .order_by(PanelOrder.created_at.desc()).limit(10)
+            )
+        orders = list(res.scalars().all())
+        # جستجو بر اساس یوزرنیم
+        if not orders and not q.isdigit():
+            uq = q.lstrip("@")
+            ur = await s.execute(select(User).where(User.username.ilike(f"%{uq}%")))
+            users = list(ur.scalars().all())
+            if users:
+                uids = [u.id for u in users]
+                or2  = await s.execute(
+                    select(PanelOrder)
+                    .where(PanelOrder.panel_id == pid, PanelOrder.user_id.in_(uids))
+                    .order_by(PanelOrder.created_at.desc()).limit(10)
+                )
+                orders = list(or2.scalars().all())
+    if not orders:
+        await msg.answer(
+            f"❌ سفارشی با «{q}» یافت نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_panel_orders_{pid}")]
+            ])
+        ); return
+    rows = []
+    for o in orders:
+        icon = STATUS_ICONS.get(o.status, "📌")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} #{o.id} — {(o.service_name or '')[:20]} — ${o.total_price:.3f}",
+            callback_data=f"adm_porder_{o.id}_{pid}"
+        )])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_panel_orders_{pid}")])
+    await msg.answer(
+        f"🔍 نتایج جستجو برای «{q}»: <b>{len(orders)}</b> مورد",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_porder_\d+_\d+$"))
+async def adm_porder_detail(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    parts   = cb.data.split("_")
+    oid, pid = int(parts[2]), int(parts[3])
+    from sqlalchemy import select
+    from db.models import PanelOrder, User
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            select(PanelOrder).where(PanelOrder.id == oid)
+        )
+        order = res.scalar_one_or_none()
+        if not order:
+            await cb.message.edit_text("❌ سفارش یافت نشد.",
+                                       reply_markup=_back(f"adm_panel_orders_{pid}")); return
+        ur = await s.execute(select(User).where(User.id == order.user_id))
+        user = ur.scalar_one_or_none()
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    STATUS_FA    = {"pending":"در انتظار","processing":"در حال انجام",
+                    "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+    icon = STATUS_ICONS.get(order.status, "📌")
+    uname = f"@{user.username}" if user and user.username else f"ID:{order.user_id}"
+    await cb.message.edit_text(
+        f"📦 <b>سفارش #{order.id}</b>\n{'━'*28}\n"
+        f"👤 کاربر: <b>{uname}</b>\n"
+        f"📌 خدمت: <b>{order.service_name or '—'}</b>\n"
+        f"🔗 لینک: <code>{order.link or '—'}</code>\n"
+        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+        f"💰 مبلغ: <b>${order.total_price:.4f}</b>\n"
+        + (f"📝 توضیح: <i>{order.note}</i>\n" if order.note else "") +
+        f"{'━'*28}\n"
+        f"وضعیت: {icon} <b>{STATUS_FA.get(order.status, order.status)}</b>\n"
+        + (f"↩️ بازگشت وجه: <b>${order.refund_amount:.4f}</b>\n" if order.refund_amount else "") +
+        (f"📝 یادداشت ادمین: <i>{order.admin_note}</i>\n" if order.admin_note else "") +
+        f"⏰ زمان: {order.created_at.strftime('%Y-%m-%d %H:%M')}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏳ در انتظار",    callback_data=f"adm_porder_st_{oid}_{pid}_pending"),
+             InlineKeyboardButton(text="🔄 در حال انجام", callback_data=f"adm_porder_st_{oid}_{pid}_processing")],
+            [InlineKeyboardButton(text="✅ تکمیل شد",     callback_data=f"adm_porder_st_{oid}_{pid}_completed"),
+             InlineKeyboardButton(text="⚠️ جزئی",         callback_data=f"adm_porder_partial_{oid}_{pid}")],
+            [InlineKeyboardButton(text="❌ رد شد",         callback_data=f"adm_porder_st_{oid}_{pid}_rejected")],
+            [InlineKeyboardButton(text="🔙 بازگشت",        callback_data=f"adm_panel_orders_{pid}")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_porder_st_\d+_\d+_\w+$"))
+async def adm_porder_set_status(cb: CallbackQuery, bot: Bot):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    parts  = cb.data.split("_")
+    oid, pid, status = int(parts[3]), int(parts[4]), parts[5]
+    from sqlalchemy import select
+    from db.models import PanelOrder, User
+    async with AsyncSessionLocal() as s:
+        order = await get_panel_order(s, oid)
+        if not order: await cb.answer("❌ یافت نشد", show_alert=True); return
+        refund = 0.0
+        if status == "rejected":
+            refund = await process_panel_refund(s, order, completed_qty=0)
+        await update_panel_order_status(s, oid, status)
+        await s.commit()
+        ur = await s.execute(select(User).where(User.id == order.user_id))
+        user = ur.scalar_one_or_none()
+        user_tg = user.telegram_id if user else None
+        bal = float(user.balance) if user else 0
+    STATUS_FA = {"pending":"در انتظار","processing":"در حال انجام",
+                 "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+    await cb.answer(f"✅ وضعیت → {STATUS_FA.get(status, status)}")
+    if user_tg:
+        await notify_order_status(bot, user_tg, oid, order.service_name or "", status,
+                                  quantity=order.quantity, refund=refund)
+        if refund > 0:
+            await notify_refund(bot, user_tg, refund, oid, "رد شدن سفارش", bal)
+    # آپدیت پیام گروه اگه وجود داشت
+    if order.group_message_id and order.panel_id:
+        from sqlalchemy import select as _sel
+        from db.models import Panel
+        async with AsyncSessionLocal() as s2:
+            pr = await s2.execute(_sel(Panel).where(Panel.id == order.panel_id))
+            panel = pr.scalar_one_or_none()
+        if panel and panel.group_chat_id:
+            STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+            try:
+                await bot.send_message(
+                    panel.group_chat_id,
+                    f"{STATUS_ICONS.get(status,'📌')} سفارش #{oid} → <b>{STATUS_FA.get(status,status)}</b>"
+                    + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else ""),
+                    reply_to_message_id=order.group_message_id,
+                    parse_mode="HTML"
+                )
+            except Exception: pass
+    cb.data = f"adm_porder_{oid}_{pid}"
+    await adm_porder_detail(cb)
+
+
+@router.callback_query(F.data.regexp(r"^adm_porder_partial_\d+_\d+$"))
+async def adm_porder_partial_start(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    parts = cb.data.split("_")
+    oid, pid = int(parts[3]), int(parts[4])
+    await state.update_data(partial_order_id=oid, partial_panel_id=pid)
+    await state.set_state(PanelAdminState.partial_qty)
+    await cb.answer()
+    await cb.message.edit_text(
+        f"⚠️ <b>تکمیل جزئی — سفارش #{oid}</b>\n{'━'*28}\n\n"
+        "چند تا انجام شد؟ (عدد وارد کنید):",
+        reply_markup=_cancel_kb(f"adm_porder_{oid}_{pid}"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(PanelAdminState.partial_qty)
+async def adm_porder_partial_qty(msg: Message, state: FSMContext, bot: Bot):
+    try:
+        qty = int((msg.text or "").strip())
+        if qty < 0: raise ValueError
+    except ValueError:
+        await msg.answer("❌ عدد صحیح غیرمنفی وارد کنید."); return
+    data = await state.get_data()
+    oid  = data.get("partial_order_id")
+    pid  = data.get("partial_panel_id")
+    await state.clear()
+    from sqlalchemy import select
+    from db.models import PanelOrder, User
+    async with AsyncSessionLocal() as s:
+        order = await get_panel_order(s, oid)
+        if not order: await msg.answer("❌ سفارش یافت نشد."); return
+        refund = await process_panel_refund(s, order, completed_qty=qty)
+        await update_panel_order_status(s, oid, "partial", completed_qty=qty)
+        await s.commit()
+        ur = await s.execute(select(User).where(User.id == order.user_id))
+        user = ur.scalar_one_or_none()
+        user_tg = user.telegram_id if user else None
+        bal = float(user.balance) if user else 0
+    await msg.answer(
+        f"✅ <b>تکمیل جزئی ثبت شد</b>\n{'━'*28}\n"
+        f"سفارش: <b>#{oid}</b>\n"
+        f"انجام شده: <b>{qty:,}</b>\n"
+        f"↩️ بازگشت وجه: <b>${refund:.4f}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_panel_orders_{pid}")]
+        ]),
+        parse_mode="HTML"
+    )
+    if user_tg:
+        await notify_order_status(bot, user_tg, oid, order.service_name or "", "partial",
+                                  quantity=order.quantity, completed_qty=qty, refund=refund)
+        if refund > 0:
+            await notify_refund(bot, user_tg, refund, oid, "تکمیل جزئی سفارش", bal)
