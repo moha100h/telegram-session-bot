@@ -112,23 +112,145 @@ async def adm_stats(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
+
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, func
+    from db.models import Transaction, PanelOrder, Panel
+
+    now     = datetime.now(timezone.utc)
+    ago_24h = now - timedelta(hours=24)
+    ago_7d  = now - timedelta(days=7)
+
     async with AsyncSessionLocal() as session:
+        # ── کاربران ──────────────────────────────────────────────────────────
         users  = await get_all_users(session)
-        orders = await get_all_orders(session)
-        deps   = await get_pending_deposits(session)
-    total_bal = sum(float(u.balance or 0) for u in users)
-    total_rev = sum(float(o.sell_price or 0) for o in orders)
-    completed = sum(1 for o in orders if o.status == "completed")
-    banned    = sum(1 for u in users if u.is_banned)
+        banned = sum(1 for u in users if u.is_banned)
+        new_24h = sum(
+            1 for u in users
+            if u.created_at and u.created_at.replace(tzinfo=timezone.utc) >= ago_24h
+        )
+        total_bal = sum(float(u.balance or 0) for u in users)
+
+        # ── سفارشات SMMPass ───────────────────────────────────────────────────
+        orders     = await get_all_orders(session)
+        ord_done   = sum(1 for o in orders if o.status == "completed")
+        ord_active = sum(1 for o in orders if o.status in ("pending","processing","in progress"))
+        ord_cancel = sum(1 for o in orders if o.status in ("cancelled","partial"))
+
+        # ── درآمد SMMPass ─────────────────────────────────────────────────────
+        rev_total = sum(float(o.sell_price or 0) - float(o.cost_price or 0) for o in orders if o.status == "completed")
+        rev_24h   = sum(
+            float(o.sell_price or 0) - float(o.cost_price or 0)
+            for o in orders
+            if o.status == "completed"
+            and o.created_at and o.created_at.replace(tzinfo=timezone.utc) >= ago_24h
+        )
+        rev_7d    = sum(
+            float(o.sell_price or 0) - float(o.cost_price or 0)
+            for o in orders
+            if o.status == "completed"
+            and o.created_at and o.created_at.replace(tzinfo=timezone.utc) >= ago_7d
+        )
+
+        # ── واریزها ───────────────────────────────────────────────────────────
+        deps_pending = await get_pending_deposits(session)
+        all_txns = (await session.execute(select(Transaction))).scalars().all()
+        dep_approved_24h = sum(
+            1 for t in all_txns
+            if t.type == "deposit" and t.status == "approved"
+            and t.created_at and t.created_at.replace(tzinfo=timezone.utc) >= ago_24h
+        )
+        dep_total_amount = sum(
+            float(t.amount or 0) for t in all_txns
+            if t.type == "deposit" and t.status == "approved"
+        )
+
+        # ── پنل‌های دستی ─────────────────────────────────────────────────────
+        try:
+            panels_res  = await session.execute(select(Panel).where(Panel.is_active == True))
+            panels_list = panels_res.scalars().all()
+            panel_count = len(panels_list)
+
+            porders_res = await session.execute(select(PanelOrder))
+            porders     = porders_res.scalars().all()
+
+            pord_24h    = sum(
+                1 for po in porders
+                if po.created_at and po.created_at.replace(tzinfo=timezone.utc) >= ago_24h
+            )
+            pord_total  = len(porders)
+            prev_24h    = sum(
+                float(po.total_price or 0) for po in porders
+                if po.status == "completed"
+                and po.created_at and po.created_at.replace(tzinfo=timezone.utc) >= ago_24h
+            )
+            prev_total  = sum(
+                float(po.total_price or 0) for po in porders
+                if po.status == "completed"
+            )
+            pord_pending = sum(1 for po in porders if po.status == "pending")
+        except Exception:
+            panel_count = pord_24h = pord_total = pord_pending = 0
+            prev_24h = prev_total = 0.0
+
+        # ── آخرین بکاپ ───────────────────────────────────────────────────────
+        last_bk_time   = await gs(session, "last_backup_time",   "—")
+        last_bk_size   = await gs(session, "last_backup_size",   "—")
+        last_bk_status = await gs(session, "last_backup_status", "—")
+
+    # ── ساخت متن ─────────────────────────────────────────────────────────────
+    NL = "\n"
+    text = (
+        "📊 <b>آمار جامع پنل</b>" + NL
+        + "<i>🕐 " + now.strftime("%Y-%m-%d %H:%M") + " UTC</i>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "👥 <b>کاربران</b>" + NL
+        + "  • کل: <b>" + str(len(users)) + "</b>"
+        + "  |  جدید ۲۴h: <b>" + str(new_24h) + "</b>"
+        + "  |  مسدود: <b>" + str(banned) + "</b>" + NL
+        + "  • موجودی کل: <b>$" + f"{total_bal:.2f}" + "</b>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "💰 <b>درآمد (SMMPass)</b>" + NL
+        + "  • ۲۴ ساعت: <b>$" + f"{rev_24h:.2f}" + "</b>" + NL
+        + "  • ۷ روز:   <b>$" + f"{rev_7d:.2f}" + "</b>" + NL
+        + "  • کل:      <b>$" + f"{rev_total:.2f}" + "</b>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "📦 <b>سفارشات SMMPass</b>" + NL
+        + "  • کل: <b>" + str(len(orders)) + "</b>"
+        + "  |  ✅ تکمیل: <b>" + str(ord_done) + "</b>" + NL
+        + "  • ⏳ در جریان: <b>" + str(ord_active) + "</b>"
+        + "  |  ❌ لغو: <b>" + str(ord_cancel) + "</b>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "🎛 <b>پنل‌های دستی</b>" + NL
+        + "  • پنل‌های فعال: <b>" + str(panel_count) + "</b>" + NL
+        + "  • سفارشات کل: <b>" + str(pord_total) + "</b>"
+        + "  |  ۲۴h: <b>" + str(pord_24h) + "</b>"
+        + "  |  ⏳ صف: <b>" + str(pord_pending) + "</b>" + NL
+        + "  • درآمد ۲۴h: <b>$" + f"{prev_24h:.2f}" + "</b>"
+        + "  |  کل: <b>$" + f"{prev_total:.2f}" + "</b>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "💳 <b>واریزها</b>" + NL
+        + "  • در انتظار: <b>" + str(len(deps_pending)) + "</b>"
+        + "  |  تایید ۲۴h: <b>" + str(dep_approved_24h) + "</b>" + NL
+        + "  • مجموع شارژ تایید شده: <b>$" + f"{dep_total_amount:.2f}" + "</b>" + NL + NL
+
+        + "━━━━━━━━━━━━━━━━━━━━" + NL
+        + "🗄 <b>آخرین بکاپ</b>" + NL
+        + "  • زمان: <code>" + last_bk_time + "</code>" + NL
+        + "  • حجم: <code>" + last_bk_size + "</code>"
+        + "  |  وضعیت: " + last_bk_status
+    )
+
     await cb.message.edit_text(
-        f"📊 <b>آمار کلی</b>\n\n"
-        f"👥 کاربران: <b>{len(users)}</b>  (🚫 {banned} مسدود)\n"
-        f"📦 سفارشات: <b>{len(orders)}</b>  (✅ {completed} تکمیل)\n"
-        f"💳 واریز در انتظار: <b>{len(deps)}</b>\n"
-        f"💰 مجموع موجودی کاربران: <b>${total_bal:.2f}</b>\n"
-        f"💹 مجموع درآمد: <b>${total_rev:.2f}</b>",
+        text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")]
+            [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="adm_stats"),
+             InlineKeyboardButton(text="🔙 بازگشت",    callback_data="menu_admin")]
         ]),
         parse_mode="HTML"
     )
