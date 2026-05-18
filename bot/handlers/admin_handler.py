@@ -88,7 +88,7 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
-            [InlineKeyboardButton(text="👤 نمایش ID در سفارشات", callback_data="adm_toggle_show_uid")],
+            [InlineKeyboardButton(text=("👤 نمایش ID: ✅ فعال" if show_uid_orders == "1" else "👤 نمایش ID: ❌ غیرفعال"), callback_data="adm_toggle_show_uid")],
         [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup"),
          InlineKeyboardButton(text="📖 راهنما",       callback_data="adm_help")],
         [InlineKeyboardButton(text="🏠 پنل کاربری",  callback_data="user_home")],
@@ -1037,30 +1037,165 @@ async def adm_orders(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "orders"):
         await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
+    from sqlalchemy import select, func
+    from db.models import PanelOrder, Panel
     async with AsyncSessionLocal() as session:
-        orders = await get_all_orders(session)
-    if not orders:
-        await cb.message.edit_text(
-            "📦 <b>سفارشات</b>\n\nهیچ سفارشی ثبت نشده.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")]
-            ]),
-            parse_mode="HTML"
-        ); return
-
-    completed = sum(1 for o in orders if o.status == "completed")
-    pending   = sum(1 for o in orders if o.status in ("pending", "processing", "in progress"))
-    revenue   = sum(float(o.sell_price or 0) for o in orders)
-
-    await cb.message.edit_text(
-        f"📦 <b>سفارشات</b>\n\n"
-        f"📊 کل: <b>{len(orders)}</b>  ✅ تکمیل: <b>{completed}</b>  "
-        f"⏳ در جریان: <b>{pending}</b>\n"
-        f"💰 مجموع درآمد: <b>${revenue:.4f}</b>\n\n"
-        f"فیلتر یا روی سفارش کلیک کنید 👇",
-        reply_markup=_orders_keyboard(orders, back_cb="menu_admin"),
-        parse_mode="HTML"
+        panels_res = await session.execute(
+            select(Panel).where(Panel.is_active == True).order_by(Panel.order_index)
+        )
+        panels = list(panels_res.scalars().all())
+        st_res = await session.execute(
+            select(
+                func.count(PanelOrder.id).label("total"),
+                func.sum(PanelOrder.total_price).label("revenue"),
+                func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("completed"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "partial").label("partial"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "rejected").label("rejected"),
+            )
+        )
+        st = st_res.one()
+        panel_stats = {}
+        for p in panels:
+            ps_res = await session.execute(
+                select(
+                    func.count(PanelOrder.id).label("total"),
+                    func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
+                    func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("done"),
+                ).where(PanelOrder.panel_id == p.id)
+            )
+            panel_stats[p.id] = ps_res.one()
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    total     = st.total or 0
+    revenue   = float(st.revenue or 0)
+    active    = st.active or 0
+    completed = st.completed or 0
+    partial   = st.partial or 0
+    rejected  = st.rejected or 0
+    text = (
+        "📦 <b>سفارشات پنل‌ها</b>\n" + SEP + "\n"
+        + "📊 کل: <b>" + str(total) + "</b>  |  "
+        + "⏳ فعال: <b>" + str(active) + "</b>  |  "
+        + "✅ تکمیل: <b>" + str(completed) + "</b>\n"
+        + ("⚠️ جزئی: <b>" + str(partial) + "</b>  |  " if partial else "")
+        + "❌ رد: <b>" + str(rejected) + "</b>\n"
+        + "💰 درآمد کل: <b>$" + f"{revenue:.4f}" + "</b>\n"
+        + SEP + "\n"
+        + "یک پنل را انتخاب کنید 👇"
     )
+    rows = []
+    for p in panels:
+        ps = panel_stats.get(p.id)
+        p_total  = ps.total if ps else 0
+        p_active = ps.active if ps else 0
+        p_done   = ps.done if ps else 0
+        btn_text = p.button_label + "  📦" + str(p_total) + "  ⏳" + str(p_active) + "  ✅" + str(p_done)
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data="adm_porders_panel_" + str(p.id))])
+    if not panels:
+        rows.append([InlineKeyboardButton(text="⚠️ هیچ پنلی فعال نیست", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@router.callback_query(F.data.regexp(r"^adm_porders_panel_\d+$"))
+async def adm_porders_panel(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    pid = int(cb.data.split("_")[-1])
+    await _render_panel_orders(cb, pid, "active")
+
+
+@router.callback_query(F.data.regexp(r"^adm_porders_f_\d+_\w+$"))
+async def adm_porders_filter(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    parts = cb.data.split("_")
+    pid, flt = int(parts[3]), parts[4]
+    await _render_panel_orders(cb, pid, flt)
+
+
+async def _render_panel_orders(cb, pid: int, flt: str):
+    from sqlalchemy import select, func
+    from db.models import PanelOrder, Panel
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    FILTER_MAP = {
+        "active":    [PanelOrder.status.in_(["pending","processing"])],
+        "pending":   [PanelOrder.status == "pending"],
+        "processing":[PanelOrder.status == "processing"],
+        "completed": [PanelOrder.status == "completed"],
+        "partial":   [PanelOrder.status == "partial"],
+        "rejected":  [PanelOrder.status == "rejected"],
+        "all":       [],
+    }
+    FILTER_LABELS = {
+        "active":"⏳ فعال","pending":"⏳ در صف","processing":"🔄 در انجام",
+        "completed":"✅ تکمیل","partial":"⚠️ جزئی","rejected":"❌ رد شد","all":"🗒 همه"
+    }
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    async with AsyncSessionLocal() as s:
+        pr = await s.execute(select(Panel).where(Panel.id == pid))
+        panel = pr.scalar_one_or_none()
+        if not panel:
+            await cb.message.edit_text("❌ پنل یافت نشد.", reply_markup=_back("adm_orders")); return
+        st_res = await s.execute(
+            select(
+                func.count(PanelOrder.id).label("total"),
+                func.sum(PanelOrder.total_price).label("revenue"),
+                func.count(PanelOrder.id).filter(PanelOrder.status.in_(["pending","processing"])).label("active"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "completed").label("completed"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "partial").label("partial"),
+                func.count(PanelOrder.id).filter(PanelOrder.status == "rejected").label("rejected"),
+            ).where(PanelOrder.panel_id == pid)
+        )
+        st = st_res.one()
+        extra = FILTER_MAP.get(flt, [])
+        q = select(PanelOrder).where(PanelOrder.panel_id == pid)
+        for f in extra: q = q.where(f)
+        q = q.order_by(PanelOrder.created_at.desc()).limit(25)
+        res = await s.execute(q)
+        orders = list(res.scalars().all())
+    total     = st.total or 0
+    revenue   = float(st.revenue or 0)
+    active    = st.active or 0
+    completed = st.completed or 0
+    partial   = st.partial or 0
+    rejected  = st.rejected or 0
+    cur_label = FILTER_LABELS.get(flt, flt)
+    text = (
+        "📦 <b>" + panel.button_label + "</b>\n" + SEP + "\n"
+        + "📊 کل: <b>" + str(total) + "</b>  |  "
+        + "⏳ فعال: <b>" + str(active) + "</b>  |  "
+        + "✅ تکمیل: <b>" + str(completed) + "</b>\n"
+        + ("⚠️ جزئی: <b>" + str(partial) + "</b>  |  " if partial else "")
+        + "❌ رد: <b>" + str(rejected) + "</b>  |  "
+        + "💰 <b>$" + f"{revenue:.4f}" + "</b>\n"
+        + SEP + "\n"
+        + "فیلتر: <b>" + cur_label + "</b>  —  " + str(len(orders)) + " سفارش"
+    )
+    rows = []
+    for o in orders:
+        icon = STATUS_ICONS.get(o.status, "📌")
+        svc  = (o.service_name or "")[:22]
+        rows.append([InlineKeyboardButton(
+            text=icon + " #" + str(o.id) + " | " + svc + " | $" + f"{o.total_price:.3f}",
+            callback_data="adm_porder_" + str(o.id) + "_" + str(pid)
+        )])
+    if not orders:
+        rows.append([InlineKeyboardButton(text="— سفارشی در این دسته نیست —", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(text="⏳ فعال",  callback_data=f"adm_porders_f_{pid}_active"),
+        InlineKeyboardButton(text="✅ تکمیل", callback_data=f"adm_porders_f_{pid}_completed"),
+        InlineKeyboardButton(text="❌ رد شد", callback_data=f"adm_porders_f_{pid}_rejected"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="⚠️ جزئی",  callback_data=f"adm_porders_f_{pid}_partial"),
+        InlineKeyboardButton(text="🗒 همه",    callback_data=f"adm_porders_f_{pid}_all"),
+        InlineKeyboardButton(text="🔍 سرچ",    callback_data=f"adm_porder_search_{pid}"),
+    ])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_orders")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("adm_orders_pg_"))
