@@ -68,6 +68,10 @@ class PanelAdminState(StatesGroup):
     partial_qty        = State()
 
 
+class PanelOrderSearchState(StatesGroup):
+    query = State()
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _back(cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
