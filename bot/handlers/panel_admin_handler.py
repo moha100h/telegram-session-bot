@@ -84,18 +84,25 @@ async def adm_panels(cb: CallbackQuery):
     async with AsyncSessionLocal() as s:
         panels = await get_all_panels(s)
     rows = []
+    # SMMPass — پنل اتوماتیک (همیشه اول)
+    rows.append([InlineKeyboardButton(
+        text="🚀 SMMPass (اتوماتیک)",
+        callback_data="adm_smmpass"
+    )])
+    # پنل‌های دستی
     for p in panels:
         icon = "✅" if p.is_active else "🔴"
         rows.append([InlineKeyboardButton(
             text=f"{icon} {p.button_label} — {p.name}",
             callback_data=f"adm_panel_{p.id}"
         )])
-    rows.append([InlineKeyboardButton(text="➕ ایجاد پنل جدید", callback_data="adm_panel_create")])
+    rows.append([InlineKeyboardButton(text="➕ ایجاد پنل دستی جدید", callback_data="adm_panel_create")])
     rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
     await cb.message.edit_text(
         f"🎛 <b>مدیریت پنل‌ها</b>\n{'━'*28}\n"
-        f"تعداد پنل‌ها: <b>{len(panels)}</b>\n\n"
-        "یک پنل را انتخاب کنید یا پنل جدید بسازید:",
+        f"🚀 SMMPass: پنل اتوماتیک\n"
+        f"🎛 پنل‌های دستی: <b>{len(panels)}</b>\n\n"
+        "یک پنل را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML"
     )
