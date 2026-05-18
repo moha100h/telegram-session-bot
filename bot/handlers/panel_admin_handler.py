@@ -21,6 +21,22 @@ from services.notification_service import notify_order_status, notify_refund
 logger = logging.getLogger("panel_admin")
 router = Router()
 
+
+def _parse_price(text: str) -> float:
+    """تبدیل قیمت — پشتیبانی از اعداد فارسی، کاما، نقطه"""
+    FA = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                       "01234567890123456789")
+    t = (text or "").strip().translate(FA)
+    if t.count(",") == 1 and t.count(".") == 0:
+        parts = t.split(",")
+        if len(parts[1]) <= 4:
+            t = t.replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    else:
+        t = t.replace(",", "")
+    return float(t)
+
 import os
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -319,7 +335,17 @@ async def adm_panel_edit_value(msg: Message, state: FSMContext):
     val   = (msg.text or "").strip()
     await state.clear()
 
-    if field == "group_chat_id":
+    if field == "price":
+        try:
+            val = _parse_price(val)
+            if val <= 0: raise ValueError
+        except (ValueError, Exception):
+            await msg.answer("❌ قیمت نامعتبر. مثال: 0.005 یا 2.50"); return
+    elif field == "min_qty" or field == "max_qty":
+        try: val = int(val)
+        except ValueError:
+            await msg.answer("❌ عدد صحیح وارد کنید."); return
+    elif field == "group_chat_id":
         try: val = int(val)
         except ValueError:
             await msg.answer("❌ آیدی گروه باید عدد باشد."); return
@@ -497,10 +523,18 @@ async def adm_svc_name(msg: Message, state: FSMContext):
 @router.message(PanelAdminState.svc_price)
 async def adm_svc_price(msg: Message, state: FSMContext):
     try:
-        price = float((msg.text or "").strip().replace(",", ""))
+        price = _parse_price(msg.text or "")
         if price <= 0: raise ValueError
-    except ValueError:
-        await msg.answer("❌ قیمت باید عدد مثبت باشد. مثال: 0.5"); return
+    except (ValueError, Exception):
+        await msg.answer(
+            "❌ قیمت نامعتبر است.\n\n"
+            "✅ فرمت‌های قابل قبول:\n"
+            "• <code>0.005</code>\n"
+            "• <code>0,005</code>\n"
+            "• <code>2.50</code>\n"
+            "• <code>۰.۰۰۵</code> (فارسی)",
+            parse_mode="HTML"
+        ); return
     await state.update_data(new_svc_price=price)
     await state.set_state(PanelAdminState.svc_min)
     await msg.answer(
