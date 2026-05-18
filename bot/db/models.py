@@ -134,6 +134,7 @@ class Order(Base):
     api_order_id  = Column(String(64), nullable=True, index=True)
     start_count   = Column(Integer, nullable=True)
     remains       = Column(Integer, nullable=True)
+    panel_name    = Column(String(64),  nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

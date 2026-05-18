@@ -51,8 +51,10 @@ async def create_order(
         sell_price   = sell_price,
         status       = "pending",
         api_order_id = api_order_id,
-        panel_name   = panel_name,
     )
+    if panel_name is not None:
+        try: order.panel_name = panel_name
+        except Exception: pass
     session.add(order)
     await session.commit()
     await session.refresh(order)
