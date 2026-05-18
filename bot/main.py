@@ -13,6 +13,7 @@ from handlers.force_join_handler   import router as force_join_router
 from handlers.backup_handler       import router as backup_router
 from handlers.panel_admin_handler  import router as panel_admin_router
 from handlers.panel_user_handler   import router as panel_user_router
+from handlers.group_id_handler     import router as group_id_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger    = logging.getLogger("main")
@@ -36,6 +37,7 @@ async def main():
     dp  = Dispatcher(storage=storage)
     dp.message.middleware(AuthMiddleware())
     dp.callback_query.middleware(AuthMiddleware())
+    dp.include_router(group_id_router)
     dp.include_router(force_join_router)
     dp.include_router(backup_router)
     dp.include_router(panel_admin_router)

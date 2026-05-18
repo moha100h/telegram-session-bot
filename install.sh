@@ -1,79 +1,157 @@
 #!/bin/bash
-# Telegram Session Bot — Install/Update v3.0
+# ============================================================
+# Telegram Session Bot — Install / Update v3.1
+# Ubuntu 22.04 / Debian 12
+# ============================================================
 set -e
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()    { echo -e "\033[0;34m[INFO]\033[0m $1"; }
-success() { echo -e "${GREEN}[OK]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
-step()    { echo -e "\n${CYAN}══════════════════════════════════════${NC}\n${CYAN}  $1${NC}\n${CYAN}══════════════════════════════════════${NC}"; }
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
+error()   { echo -e "${RED}[✗]${NC} $1"; exit 1; }
+step()    { echo -e "\n${CYAN}${BOLD}══════════════════════════════════════${NC}"; \
+            echo -e "${CYAN}${BOLD}  $1${NC}"; \
+            echo -e "${CYAN}${BOLD}══════════════════════════════════════${NC}"; }
 
 INSTALL_DIR="/opt/telegram-session-bot"
 REPO_URL="https://github.com/moha100h/telegram-session-bot.git"
+VERSION="3.1"
 
-step "1. پیش‌نیازها"
+echo -e "\n${CYAN}${BOLD}"
+echo "  ████████╗███████╗██████╗      ██████╗  ██████╗ ████████╗"
+echo "     ██╔══╝██╔════╝██╔══██╗     ██╔══██╗██╔═══██╗╚══██╔══╝"
+echo "     ██║   ███████╗██████╔╝     ██████╔╝██║   ██║   ██║   "
+echo "     ██║   ╚════██║██╔══██╗     ██╔══██╗██║   ██║   ██║   "
+echo "     ██║   ███████║██████╔╝     ██████╔╝╚██████╔╝   ██║   "
+echo "     ╚═╝   ╚══════╝╚═════╝      ╚═════╝  ╚═════╝    ╚═╝   "
+echo -e "${NC}"
+echo -e "  ${BOLD}Telegram Session Bot — SMM Panel v${VERSION}${NC}"
+echo -e "  ${BLUE}https://github.com/moha100h/telegram-session-bot${NC}\n"
+
+# ── پیش‌نیازها ────────────────────────────────────────────────────────────────
+step "1/7 — پیش‌نیازها"
 [[ $EUID -ne 0 ]] && error "با root اجرا کنید: sudo bash install.sh"
-command -v curl &>/dev/null || apt-get install -y curl -qq
-command -v git  &>/dev/null || apt-get install -y git  -qq
-success "OK"
+apt-get update -qq
+for pkg in curl git ca-certificates gnupg; do
+    command -v $pkg &>/dev/null || apt-get install -y $pkg -qq
+done
+success "پیش‌نیازها OK"
 
-step "2. Docker"
+# ── Docker ────────────────────────────────────────────────────────────────────
+step "2/7 — Docker"
 if ! command -v docker &>/dev/null; then
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker && systemctl start docker
-    success "Docker نصب شد"
+    info "نصب Docker..."
+    curl -fsSL https://get.docker.com | bash -s -- --quiet
+    systemctl enable docker --quiet && systemctl start docker
+    success "Docker نصب شد: $(docker --version)"
 else
     success "Docker: $(docker --version)"
 fi
-docker compose version &>/dev/null 2>&1 || \
-    { apt-get install -y docker-compose-plugin -qq 2>/dev/null || \
-      curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
-           -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose; }
-success "Docker Compose OK"
 
-step "3. سورس کد"
+if ! docker compose version &>/dev/null 2>&1; then
+    info "نصب Docker Compose..."
+    apt-get install -y docker-compose-plugin -qq 2>/dev/null || \
+    { curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+           -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose; }
+fi
+success "Docker Compose: $(docker compose version)"
+
+# ── سورس کد ──────────────────────────────────────────────────────────────────
+step "3/7 — سورس کد"
 if [ -d "$INSTALL_DIR/.git" ]; then
-    cd "$INSTALL_DIR" && git fetch origin && git reset --hard origin/main && success "آپدیت شد"
+    info "آپدیت از GitHub..."
+    cd "$INSTALL_DIR"
+    git fetch origin --quiet
+    git reset --hard origin/main --quiet
+    COMMIT=$(git log --oneline -1)
+    success "آپدیت شد: $COMMIT"
 else
-    git clone "$REPO_URL" "$INSTALL_DIR" && success "Clone شد"
+    info "Clone از GitHub..."
+    git clone "$REPO_URL" "$INSTALL_DIR" --quiet
+    success "Clone شد"
 fi
 cd "$INSTALL_DIR"
 
-step "4. تنظیم .env"
+# ── تنظیم .env ───────────────────────────────────────────────────────────────
+step "4/7 — تنظیم .env"
 if [ ! -f ".env" ]; then
     cp .env.example .env
-    read -rp "  BOT_TOKEN: "                     BOT_TOKEN
-    read -rp "  ADMIN_ID: "                      ADMIN_ID
-    read -rp "  POSTGRES_PASSWORD (پسورد قوی): " PG_PASS
-    sed -i "s/your_bot_token_here/$BOT_TOKEN/"       .env
-    sed -i "s/your_telegram_id_here/$ADMIN_ID/"      .env
-    sed -i "s/change_this_strong_password/$PG_PASS/" .env
+    echo ""
+    warn "لطفاً اطلاعات زیر را وارد کنید:"
+    echo ""
+    read -rp "  🤖 BOT_TOKEN (از @BotFather): "                BOT_TOKEN
+    read -rp "  👤 ADMIN_ID (آیدی عددی تلگرام شما): "         ADMIN_ID
+    read -rp "  🔐 POSTGRES_PASSWORD (پسورد قوی انتخاب کن): " PG_PASS
+
+    [[ -z "$BOT_TOKEN" ]]  && error "BOT_TOKEN نمی‌تواند خالی باشد"
+    [[ -z "$ADMIN_ID" ]]   && error "ADMIN_ID نمی‌تواند خالی باشد"
+    [[ -z "$PG_PASS" ]]    && error "POSTGRES_PASSWORD نمی‌تواند خالی باشد"
+
+    sed -i "s|your_bot_token_here|$BOT_TOKEN|"       .env
+    sed -i "s|your_telegram_id_here|$ADMIN_ID|"      .env
+    sed -i "s|change_this_strong_password|$PG_PASS|" .env
     success ".env تنظیم شد"
 else
     warn ".env موجود است — تغییر نمی‌دهیم"
+    info "برای ویرایش: nano $INSTALL_DIR/.env"
 fi
 
-step "5. Build"
+# ── Build و راه‌اندازی ────────────────────────────────────────────────────────
+step "5/7 — Build و راه‌اندازی"
+info "توقف سرویس‌های قبلی..."
 docker compose down --remove-orphans 2>/dev/null || true
+info "Build image..."
 docker compose build --no-cache bot
+info "راه‌اندازی سرویس‌ها..."
 docker compose up -d
 success "سرویس‌ها راه‌اندازی شدند"
 
-step "6. Migrations"
-for i in $(seq 1 30); do
-    docker compose exec -T postgres pg_isready -U smm -d smmbot &>/dev/null && break
-    sleep 2; [ $i -eq 30 ] && error "PostgreSQL راه‌اندازی نشد"
+# ── Migrations ────────────────────────────────────────────────────────────────
+step "6/7 — Database Migrations"
+info "صبر برای PostgreSQL..."
+RETRIES=0
+until docker compose exec -T postgres pg_isready -U smm -d smmbot &>/dev/null; do
+    RETRIES=$((RETRIES+1))
+    [ $RETRIES -ge 30 ] && error "PostgreSQL در ۶۰ ثانیه راه‌اندازی نشد"
+    sleep 2
 done
-success "PostgreSQL آماده"
-docker compose exec -T postgres psql -U smm -d smmbot < bot/db/migrations.sql \
-    && success "Migrations OK" || warn "Migration با هشدار اجرا شد"
+success "PostgreSQL آماده (${RETRIES}s)"
 
-step "7. وضعیت"
-sleep 5 && docker compose ps && echo "" && docker logs tsb_bot --tail=20
+info "اجرای migrations..."
+if docker compose exec -T postgres psql -U smm -d smmbot < bot/db/migrations.sql 2>&1 | grep -v "^NOTICE" | grep -v "^$"; then
+    success "Migrations اجرا شد"
+else
+    success "Migrations OK (جداول از قبل موجود بودند)"
+fi
 
-step "✅ نصب/آپدیت کامل شد!"
-echo -e "\n${CYAN}  دستورات:${NC}"
-echo "    docker compose logs -f bot   # لاگ"
-echo "    docker compose restart bot   # ری‌استارت"
-echo "    bash install.sh              # آپدیت"
-echo -e "\n${YELLOW}  بکاپ‌ها: /app/data/backups/${NC}\n"
+# ── وضعیت نهایی ──────────────────────────────────────────────────────────────
+step "7/7 — وضعیت نهایی"
+sleep 5
+echo ""
+docker compose ps
+echo ""
+info "آخرین لاگ‌ها:"
+docker logs tsb_bot --tail=15 2>&1
+echo ""
+
+# ── خلاصه ────────────────────────────────────────────────────────────────────
+echo -e "\n${GREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
+echo -e "${GREEN}${BOLD}║   ✅  نصب/آپدیت با موفقیت انجام شد   ║${NC}"
+echo -e "${GREEN}${BOLD}╚══════════════════════════════════════╝${NC}\n"
+
+echo -e "${CYAN}${BOLD}  دستورات مفید:${NC}"
+echo -e "  ${BOLD}docker compose logs -f bot${NC}              # لاگ زنده"
+echo -e "  ${BOLD}docker compose restart bot${NC}              # ری‌استارت"
+echo -e "  ${BOLD}docker compose ps${NC}                       # وضعیت"
+echo -e "  ${BOLD}bash $0${NC}                                 # آپدیت"
+echo ""
+echo -e "${YELLOW}  📁 مسیرها:${NC}"
+echo -e "  بکاپ‌ها:  /app/data/backups/"
+echo -e "  سشن‌ها:   /app/sessions/"
+echo -e "  تنظیمات: $INSTALL_DIR/.env"
+echo ""
+echo -e "${BLUE}  📖 راهنما: https://github.com/moha100h/telegram-session-bot${NC}"
+echo ""

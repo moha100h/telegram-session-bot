@@ -88,7 +88,8 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
-        [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup")],
+        [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup"),
+         InlineKeyboardButton(text="📖 راهنما",       callback_data="adm_help")],
         [InlineKeyboardButton(text="🏠 پنل کاربری",  callback_data="user_home")],
     ])
 
@@ -2060,6 +2061,50 @@ async def adm_del_admin(cb: CallbackQuery):
         await session.commit()
     await cb.answer("🗑 ادمین حذف شد.", show_alert=True)
     await adm_admins(cb)
+
+
+
+# ── Help / راهنما ─────────────────────────────────────────────────────────────
+@router.callback_query(F.data == "adm_help")
+async def adm_help(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    await cb.message.edit_text(
+        "📖 <b>راهنمای پنل ادمین</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🆔 <b>پیدا کردن آیدی گروه/کانال</b>\n"
+        "بات رو به گروه/کانال اضافه کن — آیدی فوری برات میاد.\n"
+        "یا داخل گروه بزن:\n"
+        "<code>/getid</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🎛 <b>تنظیم گروه برای پنل دستی</b>\n"
+        "پنل‌ها ← انتخاب پنل ← <b>تنظیم گروه 👥</b>\n"
+        "آیدی گروه رو وارد کن (مثال: <code>-1001234567890</code>)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🗄 <b>تنظیم گروه بکاپ</b>\n"
+        "بکاپ ← <b>تنظیم گروه بکاپ</b>\n"
+        "آیدی گروه رو وارد کن — بکاپ‌های خودکار اونجا ارسال میشن.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💳 <b>تایید واریز</b>\n"
+        "واریزها ← انتخاب واریز ← تایید یا رد\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <b>تنظیم SMMPass</b>\n"
+        "تنظیمات ← SMMPass API Key\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔑 <b>افزودن ادمین</b>\n"
+        "ادمین‌ها ← افزودن ادمین جدید\n"
+        "آیدی عددی تلگرام ادمین رو وارد کن.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <b>دستورات</b>\n"
+        "<code>/getid</code> — آیدی گروه/کانال\n"
+        "<code>/start</code> — شروع ربات\n"
+        "<code>/admin</code> — پنل ادمین",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")]
+        ]),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "adm_cancel")
 async def adm_cancel_handler(cb: CallbackQuery, state: FSMContext):
