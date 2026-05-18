@@ -799,9 +799,22 @@ async def _apply_group_status(msg: Message, bot: Bot, order_id: int, status: str
         if refund > 0:
             new_text += f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>"
         try:
+            _panel_id_grp = order.panel_id if order else 0
+            _is_final_grp = status in ("completed", "rejected", "partial")
+            _kb_grp = None if _is_final_grp else InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🔄 در انجام", callback_data=f"adm_grp_porder_{order_id}_{_panel_id_grp}_processing"),
+                    InlineKeyboardButton(text="✅ تکمیل",    callback_data=f"adm_grp_porder_{order_id}_{_panel_id_grp}_completed"),
+                ],
+                [
+                    InlineKeyboardButton(text="⚠️ جزئی",    callback_data=f"adm_grp_porder_{order_id}_{_panel_id_grp}_partial"),
+                    InlineKeyboardButton(text="❌ رد",       callback_data=f"adm_grp_porder_{order_id}_{_panel_id_grp}_rejected"),
+                ],
+            ])
             await bot.edit_message_text(
                 chat_id=msg.chat.id, message_id=grp_msg_id,
-                text=new_text, parse_mode="HTML"
+                text=new_text, parse_mode="HTML",
+                reply_markup=_kb_grp
             )
         except Exception as e:
             logger.warning(f"Cannot edit group msg #{grp_msg_id}: {e}")
@@ -1177,10 +1190,22 @@ async def adm_porder_set_status(cb: CallbackQuery, bot: Bot):
                     f"{STATUS_ICONS.get(status,'📌')} وضعیت: <b>{STATUS_FA.get(status,status)}</b>"
                     + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
                 )
+                _is_final_cb = status in ("completed", "rejected", "partial")
+                _kb_cb = None if _is_final_cb else InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="🔄 در انجام", callback_data=f"adm_grp_porder_{oid}_{pid}_processing"),
+                        InlineKeyboardButton(text="✅ تکمیل",    callback_data=f"adm_grp_porder_{oid}_{pid}_completed"),
+                    ],
+                    [
+                        InlineKeyboardButton(text="⚠️ جزئی",    callback_data=f"adm_grp_porder_{oid}_{pid}_partial"),
+                        InlineKeyboardButton(text="❌ رد",       callback_data=f"adm_grp_porder_{oid}_{pid}_rejected"),
+                    ],
+                ])
                 await bot.edit_message_text(
                     chat_id=panel.group_chat_id,
                     message_id=order.group_message_id,
-                    text=_new_grp, parse_mode="HTML"
+                    text=_new_grp, parse_mode="HTML",
+                    reply_markup=_kb_cb
                 )
             except Exception as _eg:
                 logger.warning(f"Cannot edit group msg for order #{oid}: {_eg}")
@@ -1246,4 +1271,74 @@ async def adm_porder_partial_qty(msg: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "noop")
 async def noop_handler(cb: CallbackQuery):
     await cb.answer()
+
+
+
+# ── تغییر وضعیت سفارش از دکمه‌های گروه ─────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^adm_grp_porder_\d+_\d+_\w+$"))
+async def adm_grp_porder_status(cb: CallbackQuery, bot: Bot):
+    """callback از دکمه‌های inline پیام گروه"""
+    if not await _is_admin(cb.from_user.id):
+        await cb.answer("⛔️ فقط ادمین‌ها می‌توانند وضعیت را تغییر دهند.", show_alert=True); return
+    parts  = cb.data.split("_")
+    # adm_grp_porder_{oid}_{pid}_{status}
+    oid    = int(parts[3])
+    pid    = int(parts[4])
+    status = parts[5]
+    from sqlalchemy import select
+    from db.models import PanelOrder, User
+    async with AsyncSessionLocal() as s:
+        order = await get_panel_order(s, oid)
+        if not order:
+            await cb.answer("❌ سفارش یافت نشد!", show_alert=True); return
+        if order.status in ("completed", "rejected", "partial"):
+            await cb.answer("⛔️ این سفارش نهایی شده و قابل تغییر نیست.", show_alert=True); return
+        refund = 0.0
+        if status == "rejected":
+            refund = await process_panel_refund(s, order, completed_qty=0)
+        await update_panel_order_status(s, oid, status)
+        await s.commit()
+        ur = await s.execute(select(User).where(User.id == order.user_id))
+        user = ur.scalar_one_or_none()
+        user_tg = user.telegram_id if user else None
+        bal     = float(user.balance) if user else 0
+    STATUS_FA   = {"pending":"در انتظار","processing":"در حال انجام",
+                   "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+    STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    icon      = STATUS_ICONS.get(status, "📌")
+    status_fa = STATUS_FA.get(status, status)
+    await cb.answer(f"✅ وضعیت → {status_fa}")
+    # آپدیت پیام گروه
+    _is_final = status in ("completed", "rejected", "partial")
+    _new_text = (
+        f"🆕 <b>سفارش #{oid}</b>\n"
+        f"{"━"*28}\n"
+        f"📌 خدمت: <b>{(order.service_name or "")[:50]}</b>\n"
+        f"🔗 لینک: <code>{(order.link or "")[:100]}</code>\n"
+        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+        f"💰 مبلغ: <b>${float(order.total_price):.4f}</b>\n"
+        f"{"━"*28}\n"
+        f"{icon} وضعیت: <b>{status_fa}</b>"
+        + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
+    )
+    _kb_new = None if _is_final else InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 در انجام", callback_data=f"adm_grp_porder_{oid}_{pid}_processing"),
+            InlineKeyboardButton(text="✅ تکمیل",    callback_data=f"adm_grp_porder_{oid}_{pid}_completed"),
+        ],
+        [
+            InlineKeyboardButton(text="⚠️ جزئی",    callback_data=f"adm_grp_porder_{oid}_{pid}_partial"),
+            InlineKeyboardButton(text="❌ رد",       callback_data=f"adm_grp_porder_{oid}_{pid}_rejected"),
+        ],
+    ])
+    try:
+        await cb.message.edit_text(_new_text, parse_mode="HTML", reply_markup=_kb_new)
+    except Exception as _e:
+        pass
+    # نوتیف کاربر
+    if user_tg:
+        await notify_order_status(bot, user_tg, oid, order.service_name or "", status,
+                                  quantity=order.quantity, refund=refund)
+        if refund > 0:
+            await notify_refund(bot, user_tg, refund, oid, "رد شدن سفارش", bal)
 

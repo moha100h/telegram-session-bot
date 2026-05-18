@@ -245,7 +245,17 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
                     + "💰 مبلغ: <b>$" + f"{total:.4f}" + "</b>\n"
                     + ("📝 توضیح: <i>" + escape(note) + "</i>\n" if note else "")
                     + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ وضعیت: <b>در انتظار</b>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="🔄 در انجام", callback_data=f"adm_grp_porder_{oid}_{panel_id}_processing"),
+                            InlineKeyboardButton(text="✅ تکمیل",    callback_data=f"adm_grp_porder_{oid}_{panel_id}_completed"),
+                        ],
+                        [
+                            InlineKeyboardButton(text="⚠️ جزئی",    callback_data=f"adm_grp_porder_{oid}_{panel_id}_partial"),
+                            InlineKeyboardButton(text="❌ رد",       callback_data=f"adm_grp_porder_{oid}_{panel_id}_rejected"),
+                        ],
+                    ])
                 )
                 grp_msg_id = sent.message_id
             except Exception as eg:
