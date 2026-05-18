@@ -6,11 +6,13 @@ from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from db.database import init_db
 from middlewares.auth_middleware import AuthMiddleware
-from handlers.user_handler       import router as user_router
-from handlers.admin_handler      import router as admin_router
-from handlers.smmpass_handler    import router as smmpass_router
-from handlers.force_join_handler import router as force_join_router
-from handlers.backup_handler     import router as backup_router
+from handlers.user_handler         import router as user_router
+from handlers.admin_handler        import router as admin_router
+from handlers.smmpass_handler      import router as smmpass_router
+from handlers.force_join_handler   import router as force_join_router
+from handlers.backup_handler       import router as backup_router
+from handlers.panel_admin_handler  import router as panel_admin_router
+from handlers.panel_user_handler   import router as panel_user_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger    = logging.getLogger("main")
@@ -36,6 +38,8 @@ async def main():
     dp.callback_query.middleware(AuthMiddleware())
     dp.include_router(force_join_router)
     dp.include_router(backup_router)
+    dp.include_router(panel_admin_router)
+    dp.include_router(panel_user_router)
     dp.include_router(user_router)
     dp.include_router(admin_router)
     dp.include_router(smmpass_router)

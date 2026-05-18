@@ -42,13 +42,29 @@ class UserState(StatesGroup):
 
 
 async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=smm_title,            callback_data="menu_smmpass")],
-        [InlineKeyboardButton(text="💰 کیف پول",        callback_data="user_wallet"),
-         InlineKeyboardButton(text="📦 سفارش‌های من",   callback_data="user_orders")],
-        [InlineKeyboardButton(text="👤 پروفایل",        callback_data="user_profile"),
-         InlineKeyboardButton(text="📞 پشتیبانی",       callback_data="user_support")],
+    """منوی داینامیک — SMMPass + پنل‌های دستی از DB"""
+    rows = []
+    rows.append([InlineKeyboardButton(text=smm_title, callback_data="menu_smmpass")])
+    try:
+        from services.panel_service import get_all_panels
+        async with AsyncSessionLocal() as _ps:
+            panels = await get_all_panels(_ps, active_only=True)
+        for p in panels:
+            rows.append([InlineKeyboardButton(
+                text=p.button_label,
+                callback_data=f"panel_user_{p.id}"
+            )])
+    except Exception:
+        pass
+    rows.append([
+        InlineKeyboardButton(text="💰 کیف پول",      callback_data="user_wallet"),
+        InlineKeyboardButton(text="📦 سفارش‌های من", callback_data="user_orders"),
     ])
+    rows.append([
+        InlineKeyboardButton(text="👤 پروفایل",      callback_data="user_profile"),
+        InlineKeyboardButton(text="📞 پشتیبانی",     callback_data="user_support"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ── /start ────────────────────────────────────────────────────────────────────

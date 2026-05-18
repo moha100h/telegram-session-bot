@@ -84,7 +84,7 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📦 سفارش‌ها",     callback_data="adm_orders")],
         [InlineKeyboardButton(text="💳 واریزها",      callback_data="adm_deposits"),
          InlineKeyboardButton(text="⚙️ تنظیمات",     callback_data="adm_settings")],
-        [InlineKeyboardButton(text="🚀 SMMPass",      callback_data="adm_smmpass"),
+        [InlineKeyboardButton(text="🎛 پنل‌ها",       callback_data="adm_panels"),
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
