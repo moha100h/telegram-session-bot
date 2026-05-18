@@ -1185,7 +1185,7 @@ async def _render_panel_orders(cb, pid: int, flt: str):
         InlineKeyboardButton(text="🗒 همه",    callback_data=f"adm_porders_f_{pid}_all"),
         InlineKeyboardButton(text="🔍 سرچ",    callback_data=f"adm_porder_search_{pid}"),
     ])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_panel_orders_hub")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_orders")])
     await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
@@ -1527,7 +1527,7 @@ async def adm_order_live(cb: CallbackQuery):
         except Exception as e:
             api_error = str(e)[:120]
     else:
-        api_error = "⚠️ api_order_id ثبت نشده (سفارش قدیمی)"
+        api_error = "⚠️ این سفارش قدیمی است و api_order_id ندارد — وضعیت از API دریافت نمی‌شود."
 
     # ── محاسبه progress ───────────────────────────────────────────────────────
     icon, label = ADM_ORDER_ST.get(live_status, ("🟡", live_status))
@@ -1585,6 +1585,11 @@ async def adm_order_live(cb: CallbackQuery):
     # ── دکمه‌ها ───────────────────────────────────────────────────────────────
     can_cancel = live_status in ("pending", "processing", "in progress")
     action_row = []
+    if not api_id or not str(api_id).isdigit():
+        action_row.append(InlineKeyboardButton(
+            text="📤 ثبت در API",
+            callback_data=f"adm_order_resubmit_{order_id}"
+        ))
     if can_cancel:
         action_row.append(InlineKeyboardButton(
             text="🚫 کنسل دستی",
@@ -1594,18 +1599,69 @@ async def adm_order_live(cb: CallbackQuery):
         text="🔄 بروزرسانی",
         callback_data=f"adm_order_{order_id}"
     ))
-
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             action_row,
-            [InlineKeyboardButton(text="🔙 بازگشت به سفارشات", callback_data="adm_orders")],
+            [InlineKeyboardButton(text="🔙 بازگشت به سفارشات", callback_data="adm_smm_orders")],
         ]),
         parse_mode="HTML"
     )
 
 
 # ── کنسل دستی — تأیید ────────────────────────────────────────────────────────
+# ── ثبت مجدد سفارش قدیمی در API ────────────────────────────────────────────
+@router.callback_query(F.data.startswith("adm_order_resubmit_"))
+async def adm_order_resubmit(cb: CallbackQuery, bot: Bot):
+    if not await _is_admin(cb.from_user.id, "orders"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer("⏳ در حال ثبت در API...")
+    order_id = int(cb.data.split("_")[-1])
+    from services.smmpass import place_order as api_place
+    async with AsyncSessionLocal() as session:
+        order = await get_order_by_id(session, order_id)
+    if not order:
+        await cb.answer("❌ سفارش یافت نشد!", show_alert=True); return
+    if order.api_order_id and str(order.api_order_id).isdigit():
+        await cb.answer("⚠️ این سفارش قبلاً در API ثبت شده.", show_alert=True); return
+    try:
+        result = await api_place(
+            service_id=order.service_id,
+            link=order.link,
+            quantity=order.quantity
+        )
+        new_api_id = str(result.get("order", ""))
+        if not new_api_id or not new_api_id.isdigit():
+            raise ValueError(f"پاسخ نامعتبر API: {result}")
+        async with AsyncSessionLocal() as session:
+            o = await get_order_by_id(session, order_id)
+            if o:
+                o.api_order_id = new_api_id
+                o.status = "pending"
+                await session.commit()
+        await cb.message.edit_text(
+            f"✅ <b>سفارش #{order_id} با موفقیت در API ثبت شد</b>\n"
+            f"🌐 شناسه API: <code>{new_api_id}</code>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📦 مشاهده سفارش", callback_data=f"adm_order_{order_id}")],
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_smm_orders")],
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        err = str(e)[:200]
+        await cb.message.edit_text(
+            f"❌ <b>خطا در ثبت سفارش #{order_id} در API</b>\n\n<code>{err}</code>\n\n"
+            "می‌توانید سفارش را کنسل کنید یا دوباره تلاش کنید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 تلاش مجدد", callback_data=f"adm_order_resubmit_{order_id}"),
+                 InlineKeyboardButton(text="🚫 کنسل", callback_data=f"adm_ocancel_confirm_{order_id}")],
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_order_{order_id}")],
+            ]),
+            parse_mode="HTML"
+        )
+
+
 @router.callback_query(F.data.startswith("adm_ocancel_confirm_"))
 async def adm_order_cancel_confirm(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id, "orders"):
