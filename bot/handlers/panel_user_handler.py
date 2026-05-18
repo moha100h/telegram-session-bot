@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from db.database import AsyncSessionLocal
 from db.models import User, Transaction
 from services.panel_service import get_panel, get_categories, get_services, get_service, create_panel_order
-from services.notification_service import notify_balance_deducted
+from services.notification_service import notify_order_confirmed
 from sqlalchemy import select, update as _upd
 
 logger = logging.getLogger("panel_user")
@@ -263,6 +263,7 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
         ]), parse_mode="HTML"
     )
     try:
-        await notify_balance_deducted(bot, db_user.telegram_id, total,
-                                      f"سفارش #{oid} — {svc_name[:30]}", new_bal)
+        await notify_order_confirmed(bot, db_user.telegram_id,
+            order_id=oid, panel_name=panel.name, service_name=svc_name,
+            quantity=qty, amount=total, balance=new_bal)
     except Exception: pass
