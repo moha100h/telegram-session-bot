@@ -15,11 +15,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
   redis:
     image: redis:7-alpine
     container_name: tsb_redis
     restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
     healthcheck:
@@ -27,7 +27,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
   bot:
     build:
       context: ./bot
@@ -38,17 +37,21 @@ services:
     environment:
       REDIS_URL:     redis://redis:6379/0
       POSTGRES_HOST: postgres
+      REDIS_HOST:    redis
+      REDIS_PORT:    "6379"
+      BACKUP_DIR:    /app/data/backups
     volumes:
       - sessions_data:/app/sessions
       - app_data:/app/data
+      - backup_data:/app/data/backups
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-
 volumes:
   postgres_data:
   redis_data:
   sessions_data:
   app_data:
+  backup_data:
