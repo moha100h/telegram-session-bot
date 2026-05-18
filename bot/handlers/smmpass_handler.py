@@ -90,7 +90,7 @@ async def sp_entry(cb: CallbackQuery, state: FSMContext, db_user: User = None):
         "یک بخش را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🛒 سفارش جدید",   callback_data="sp_cats_0")],
-            [InlineKeyboardButton(text="📦 سفارشات من",    callback_data="sp_my_orders")],
+            [InlineKeyboardButton(text="📦 سفارشات من",    callback_data="user_orders")],
             [InlineKeyboardButton(text="🔍 وضعیت سفارش",  callback_data="sp_check_status")],
             [InlineKeyboardButton(text="💳 شارژ موجودی",   callback_data="user_deposit")],
             [InlineKeyboardButton(text="🏠 خانه",           callback_data="user_home")],
@@ -414,6 +414,8 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
             parse_mode="HTML"
         ); return
     await cb.message.edit_text("⏳ <b>در حال ثبت سفارش...</b>", parse_mode="HTML")
+    async with AsyncSessionLocal() as _s:
+        panel_title = await get_setting(_s, "smm_panel_title", "SMMPass")
     async with AsyncSessionLocal() as session:
         ok = await deduct_balance(session, db_user.id, total)
         if not ok:
@@ -450,7 +452,6 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
                 ]),
                 parse_mode="HTML"
             ); return
-        panel_title = await get_setting(session, "smm_panel_title", "SMMPass")
         order = await create_order(
             session, user_id=db_user.id, service_id=int(svc_id),
             service_name=svc_name, link=link, quantity=qty,
@@ -468,7 +469,7 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
         f"💰 پرداخت: <b>${total:.4f}</b>\n{'━'*28}\n\n"
         f"⏳ سفارش در صف پردازش است.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📦 سفارشات من", callback_data="sp_my_orders")],
+            [InlineKeyboardButton(text="📦 سفارشات من", callback_data="user_orders")],
             [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="sp_cats_0")],
             [InlineKeyboardButton(text="🏠 خانه",        callback_data="user_home")],
         ]),
@@ -677,7 +678,7 @@ async def sp_order_detail(cb: CallbackQuery, db_user: User = None):
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"sp_order_{order_id}")],
-            [InlineKeyboardButton(text="🔙 سفارشات من", callback_data="sp_my_orders")],
+            [InlineKeyboardButton(text="🔙 سفارشات من", callback_data="user_orders")],
             [InlineKeyboardButton(text="🏠 خانه",        callback_data="menu_smmpass")],
         ]),
         parse_mode="HTML"
