@@ -1,8 +1,8 @@
 """
 Group/Channel ID Handler
 - فقط سوپرادمین می‌تواند بات را به گروه/کانال اضافه کند
-- اگر کس دیگری اضافه کرد → بات فوری leave می‌کند + نوتیف به ادمین
-- وقتی بات به گروه/کانال اضافه شد → ID رو به ادمین می‌فرستد
+- اگر کس دیگری اضافه کرد → بات فوری leave می‌کند (بدون پیام)
+- وقتی ادمین اضافه کرد → ID رو به ادمین می‌فرستد
 - دستور /getid در گروه → ID رو نشون می‌دهد
 """
 import logging, os
@@ -16,30 +16,24 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 
 def _fa(t: str) -> str:
-    return {"گروه": "گروه", "group": "گروه", "supergroup": "سوپرگروه", "channel": "کانال"}.get(t, t)
+    return {"group": "گروه", "supergroup": "سوپرگروه", "channel": "کانال"}.get(t, t)
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=JOIN_TRANSITION))
 async def bot_added(event: ChatMemberUpdated, bot: Bot):
     chat = event.chat
     by   = event.from_user
+
+    # غیرادمین → leave خاموش (بدون هیچ پیامی)
     if by and by.id != ADMIN_ID:
-        logger.warning(f"SECURITY: unauthorized add by {by.id} to {chat.id}. Leaving...")
+        logger.warning(f"SECURITY: unauthorized add by {by.id} to {chat.id}. Leaving silently...")
         try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"⚠️ <b>تلاش غیرمجاز برای اضافه کردن بات</b>\n\n"
-                f"👤 توسط: <b>{by.full_name}</b> (<code>{by.id}</code>)\n"
-                f"📛 گروه: <b>{chat.title or 'بدون نام'}</b>\n"
-                f"🆔 آیدی: <code>{chat.id}</code>\n\n"
-                f"🚫 بات خودکار خارج شد.",
-                parse_mode="HTML"
-            )
-        except Exception: pass
-        try: await bot.leave_chat(chat.id)
-        except Exception as e: logger.error(f"leave failed {chat.id}: {e}")
+            await bot.leave_chat(chat.id)
+        except Exception as e:
+            logger.error(f"leave failed {chat.id}: {e}")
         return
 
+    # ادمین اضافه کرد → فقط ID رو بفرست
     ctype = _fa(chat.type)
     title = chat.title or "بدون نام"
     uname = f"@{chat.username}" if chat.username else "بدون یوزرنیم"
@@ -53,25 +47,15 @@ async def bot_added(event: ChatMemberUpdated, bot: Bot):
             f"💡 این آیدی رو در تنظیمات پنل یا بکاپ استفاده کن.",
             parse_mode="HTML"
         )
-    except Exception as e: logger.error(f"notify admin failed: {e}")
+    except Exception as e:
+        logger.error(f"notify admin failed: {e}")
     logger.info(f"Bot added to {chat.type} {chat.id} ({title})")
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=LEAVE_TRANSITION))
 async def bot_removed(event: ChatMemberUpdated, bot: Bot):
-    chat  = event.chat
-    by    = event.from_user
-    ctype = _fa(chat.type)
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔴 <b>بات از {ctype} خارج شد</b>\n\n"
-            f"📛 نام: <b>{chat.title or 'بدون نام'}</b>\n"
-            f"🆔 آیدی: <code>{chat.id}</code>\n"
-            f"👤 توسط: <b>{by.full_name if by else 'نامشخص'}</b>",
-            parse_mode="HTML"
-        )
-    except Exception: pass
+    # خاموش — هیچ پیامی نمی‌فرستیم
+    logger.info(f"Bot removed from {event.chat.type} {event.chat.id}")
 
 
 @router.message(F.text == "/getid")
