@@ -710,74 +710,111 @@ async def adm_psvc_editmin(cb: CallbackQuery, state: FSMContext):
 # بخش ۶ — مدیریت سفارش‌ها از گروه (ریپلی)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.message(F.reply_to_message & F.text.regexp(r"^[/!]?(صف|انجام|تکمیل|رد|partial)"))
-async def group_order_reply(msg: Message, bot: Bot):
-    """ریپلی روی پیام سفارش در گروه → تغییر وضعیت"""
+@router.message(F.reply_to_message & F.text.regexp(r"^[/!]?(صف|انجام|تکمیل|رد|partial)(\s+\d+)?$"))
+async def group_order_reply(msg: Message, state: FSMContext, bot: Bot):
+    """ریپلی روی پیام سفارش در گروه → تغییر وضعیت + edit پیام اصلی"""
     if not await _is_admin(msg.from_user.id): return
-    # پیدا کردن order_id از متن پیام اصلی
-    original = msg.reply_to_message.text or ""
-    import re
-    m = re.search(r"سفارش #(\d+)", original)
+    original = msg.reply_to_message.text or msg.reply_to_message.caption or ""
+    import re as _re
+    m = _re.search(r"سفارش #(\d+)", original)
     if not m: return
-    order_id = int(m.group(1))
-
-    cmd = (msg.text or "").strip().lstrip("/!").lower()
-    status_map = {
-        "صف": "pending", "انجام": "processing",
-        "تکمیل": "completed", "رد": "rejected",
-    }
-
+    order_id  = int(m.group(1))
+    raw_parts = (msg.text or "").strip().lstrip("/!").split()
+    cmd       = raw_parts[0].lower() if raw_parts else ""
+    status_map = {"صف":"pending","انجام":"processing","تکمیل":"completed","رد":"rejected"}
     if cmd == "partial":
-        # partial — منتظر تعداد
-        await msg.reply(
-            "⚠️ <b>تکمیل جزئی</b>\n\n"
-            f"سفارش #{order_id}\n"
-            "چند تا انجام شد؟ (عدد بفرست)",
-            parse_mode="HTML"
-        )
-        # ذخیره در یه dict موقت — برای سادگی از caption استفاده می‌کنیم
+        qty = None
+        if len(raw_parts) >= 2:
+            try: qty = int(raw_parts[1])
+            except ValueError: pass
+        if qty is None:
+            await state.update_data(group_partial_order_id=order_id,
+                                    group_partial_msg_id=msg.reply_to_message.message_id,
+                                    group_partial_chat_id=msg.chat.id)
+            await state.set_state(PanelAdminState.partial_qty)
+            try:
+                await msg.reply(
+                    f"⚠️ <b>تکمیل جزئی — سفارش #{order_id}</b>\n\n"
+                    "چند تا انجام شد؟ (عدد بفرست)\n<i>یا مستقیم: partial 500</i>",
+                    parse_mode="HTML"
+                )
+            except Exception: pass
+            return
+        await _apply_group_status(msg, bot, order_id, "partial",
+                                  partial_qty=qty, original_msg_id=msg.reply_to_message.message_id)
         return
-
     status = status_map.get(cmd)
     if not status: return
+    await _apply_group_status(msg, bot, order_id, status,
+                              original_msg_id=msg.reply_to_message.message_id)
 
+
+async def _apply_group_status(msg: Message, bot: Bot, order_id: int, status: str,
+                               partial_qty: int = None, original_msg_id: int = None):
+    """اعمال وضعیت + edit پیام اصلی گروه"""
+    from html import escape as _esc
     async with AsyncSessionLocal() as s:
         order = await get_panel_order(s, order_id)
         if not order:
-            await msg.reply(f"❌ سفارش #{order_id} یافت نشد."); return
-        old_status = order.status
-        await update_panel_order_status(s, order_id, status)
-
+            try: await msg.reply(f"❌ سفارش #{order_id} یافت نشد.")
+            except Exception: pass
+            return
         refund = 0.0
         if status == "rejected":
             refund = await process_panel_refund(s, order, completed_qty=0)
+        elif status == "partial" and partial_qty is not None:
+            refund = await process_panel_refund(s, order, completed_qty=partial_qty)
+        await update_panel_order_status(s, order_id, status, completed_qty=partial_qty)
         await s.commit()
-
-        user_tg = order.user.telegram_id if order.user else None
-
-    icon, status_fa = STATUS_ICONS.get(status, ("📌", status)), ""
-    status_fa = {"pending":"در انتظار","processing":"در حال انجام",
-                 "completed":"تکمیل شد","rejected":"رد شد"}.get(status, status)
-
-    await msg.reply(
-        f"✅ وضعیت سفارش #{order_id} به <b>{status_fa}</b> تغییر کرد."
-        + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else ""),
-        parse_mode="HTML"
-    )
-
-    if user_tg:
-        await notify_order_status(
-            bot, user_tg, order_id, order.service_name or "", status,
-            quantity=order.quantity, refund=refund
+        user_tg     = order.user.telegram_id if order.user else None
+        svc_name    = order.service_name or ""
+        quantity    = order.quantity
+        link        = order.link or ""
+        total_price = float(order.total_price)
+        created_at  = order.created_at.strftime("%Y-%m-%d %H:%M")
+        grp_msg_id  = order.group_message_id
+    _ST_FA = {"pending":"در انتظار","processing":"در حال انجام",
+              "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+    _ST_IC = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
+    icon      = _ST_IC.get(status, "📌")
+    status_fa = _ST_FA.get(status, status)
+    if grp_msg_id and msg.chat.id:
+        new_text = (
+            f"🆕 <b>سفارش #{order_id}</b>\n"
+            f"{'━'*28}\n"
+            f"📌 خدمت: <b>{_esc(svc_name[:50])}</b>\n"
+            f"🔗 لینک: <code>{_esc(link[:100])}</code>\n"
+            f"🔢 تعداد: <b>{quantity:,}</b>\n"
+            f"💰 مبلغ: <b>${total_price:.4f}</b>\n"
+            f"📅 تاریخ: <b>{created_at}</b>\n"
+            f"{'━'*28}\n"
+            f"{icon} وضعیت: <b>{status_fa}</b>"
         )
+        if partial_qty is not None:
+            new_text += f"\n✅ انجام شده: <b>{partial_qty:,}</b>"
         if refund > 0:
-            async with AsyncSessionLocal() as s2:
-                from sqlalchemy import select
-                from db.models import User
-                ur = await s2.execute(select(User).where(User.id == order.user_id))
-                u  = ur.scalar_one_or_none()
+            new_text += f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>"
+        try:
+            await bot.edit_message_text(
+                chat_id=msg.chat.id, message_id=grp_msg_id,
+                text=new_text, parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"Cannot edit group msg #{grp_msg_id}: {e}")
+    try: await msg.delete()
+    except Exception: pass
+    if user_tg:
+        await notify_order_status(bot, user_tg, order_id, svc_name, status,
+                                  quantity=quantity, completed_qty=partial_qty, refund=refund)
+        if refund > 0:
+            from sqlalchemy import select as _sel
+            from db.models import User as _User
+            async with AsyncSessionLocal() as s3:
+                ur  = await s3.execute(_sel(_User).where(_User.telegram_id == user_tg))
+                u   = ur.scalar_one_or_none()
                 bal = float(u.balance) if u else 0
-            await notify_refund(bot, user_tg, refund, order_id, "رد شدن سفارش", bal)
+            reason = "رد شدن سفارش" if status == "rejected" else "تکمیل جزئی سفارش"
+            await notify_refund(bot, user_tg, refund, order_id, reason, bal)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1020,16 +1057,25 @@ async def adm_porder_set_status(cb: CallbackQuery, bot: Bot):
             pr = await s2.execute(_sel(Panel).where(Panel.id == order.panel_id))
             panel = pr.scalar_one_or_none()
         if panel and panel.group_chat_id:
-            STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
             try:
-                await bot.send_message(
-                    panel.group_chat_id,
-                    f"{STATUS_ICONS.get(status,'📌')} سفارش #{oid} → <b>{STATUS_FA.get(status,status)}</b>"
-                    + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else ""),
-                    reply_to_message_id=order.group_message_id,
-                    parse_mode="HTML"
+                _new_grp = (
+                    f"🆕 <b>سفارش #{oid}</b>\n"
+                    f"{'━'*28}\n"
+                    f"📌 خدمت: <b>{(order.service_name or '')[:50]}</b>\n"
+                    f"🔗 لینک: <code>{(order.link or '')[:100]}</code>\n"
+                    f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
+                    f"💰 مبلغ: <b>${float(order.total_price):.4f}</b>\n"
+                    f"{'━'*28}\n"
+                    f"{STATUS_ICONS.get(status,'📌')} وضعیت: <b>{STATUS_FA.get(status,status)}</b>"
+                    + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")
                 )
-            except Exception: pass
+                await bot.edit_message_text(
+                    chat_id=panel.group_chat_id,
+                    message_id=order.group_message_id,
+                    text=_new_grp, parse_mode="HTML"
+                )
+            except Exception as _eg:
+                logger.warning(f"Cannot edit group msg for order #{oid}: {_eg}")
     cb.data = f"adm_porder_{oid}_{pid}"
     await adm_porder_detail(cb)
 
