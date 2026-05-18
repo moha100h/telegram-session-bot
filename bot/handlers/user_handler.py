@@ -506,53 +506,129 @@ async def user_transactions(cb: CallbackQuery, db_user: User = None):
 
 
 # ── Orders — live tracking ───────────────────────────────────────────────────────────────────────────────
+from datetime import datetime, timedelta, timezone
+
+_ARCHIVE_STATUSES = {"completed", "cancelled", "rejected"}
+_ARCHIVE_HOURS    = 24
+_ARCHIVE_MAX      = 30
+
+
+def _is_archived(order) -> bool:
+    if getattr(order, 'status', '') not in _ARCHIVE_STATUSES:
+        return False
+    updated = getattr(order, 'updated_at', None) or getattr(order, 'created_at', None)
+    if updated is None:
+        return False
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - updated > timedelta(hours=_ARCHIVE_HOURS)
+
+
 @router.callback_query(F.data == "user_orders")
 async def user_orders(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
     from html import escape
     from services.panel_service import get_user_panel_orders
+    from collections import defaultdict
     async with AsyncSessionLocal() as session:
-        smm_orders   = await get_user_orders(session, db_user.id)
-        panel_orders = await get_user_panel_orders(session, db_user.id, limit=20)
-    if not smm_orders and not panel_orders:
-        await cb.message.edit_text(
-            "📦 هیچ سفارشی وجود ندارد.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="menu_smmpass")],
-                [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home")],
-            ])
-        )
-        return
+        all_smm   = await get_user_orders(session, db_user.id)
+        all_panel = await get_user_panel_orders(session, db_user.id, limit=50)
+    smm_active   = [o for o in all_smm   if not _is_archived(o)]
+    panel_active = [o for o in all_panel if not _is_archived(o)]
+    _ST = {
+        "pending":    ("⏳", "در صف"),
+        "processing": ("🔄", "در حال انجام"),
+        "completed":  ("✅", "تکمیل"),
+        "partial":    ("⚠️", "ناقص"),
+        "rejected":   ("❌", "رد"),
+        "cancelled":  ("❌", "کنسل"),
+    }
     buttons = []
-    if smm_orders:
-        buttons.append([InlineKeyboardButton(text="━━━ 🤖 سفارشات SMMPass ━━━", callback_data="noop")])
-        for o in smm_orders[:10]:
-            icon, label = STATUS_ICONS.get(o.status, ("🟡", o.status))
+    if not smm_active and not panel_active:
+        buttons.append([InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="menu_smmpass")])
+        buttons.append([InlineKeyboardButton(text="📜 تاریخچه",        callback_data="user_orders_history")])
+        buttons.append([InlineKeyboardButton(text="🏠 بازگشت",            callback_data="user_home")])
+        await cb.message.edit_text("📦 سفارش فعالی وجود ندارد.",
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        return
+    # گروه‌بندی بر اساس نام پنل
+    smm_by_panel   = defaultdict(list)
+    panel_by_name  = defaultdict(list)
+    for o in smm_active[:15]:
+        smm_by_panel[getattr(o, 'panel_name', None) or "SMMPass"].append(o)
+    for o in panel_active[:15]:
+        panel_by_name[getattr(o, 'panel_name', None) or "پنل دستی"].append(o)
+    for pname, orders in smm_by_panel.items():
+        buttons.append([InlineKeyboardButton(text=f"━━━ 🤖 {pname} ━━━", callback_data="noop")])
+        for o in orders:
+            icon, label = _ST.get(o.status, ("🟡", o.status))
             buttons.append([InlineKeyboardButton(
-                text=f"{icon} #{o.id} | {(o.service_name or '')[:20]} | {label}",
+                text=f"{icon} #{o.id} {(o.service_name or '')[:22]} — {label}",
                 callback_data=f"user_order_{o.id}"
             )])
-    if panel_orders:
-        buttons.append([InlineKeyboardButton(text="━━━ 🎛 سفارشات پنل دستی ━━━", callback_data="noop")])
-        _PST = {
-            "pending":    ("⏳", "در صف"),
-            "processing": ("🔄", "در حال انجام"),
-            "completed":  ("✅", "تکمیل شده"),
-            "partial":    ("⚠️", "ناقص"),
-            "rejected":   ("❌", "رد شده"),
-        }
-        for o in panel_orders[:10]:
-            icon, label = _PST.get(o.status, ("🟡", o.status))
+    for pname, orders in panel_by_name.items():
+        buttons.append([InlineKeyboardButton(text=f"━━━ 🎛 {pname} ━━━", callback_data="noop")])
+        for o in orders:
+            icon, label = _ST.get(o.status, ("🟡", o.status))
             buttons.append([InlineKeyboardButton(
-                text=f"{icon} #{o.id} | {(o.service_name or '')[:20]} | {label}",
+                text=f"{icon} #{o.id} {(o.service_name or '')[:22]} — {label}",
                 callback_data=f"user_panel_order_{o.id}"
             )])
     buttons.append([
         InlineKeyboardButton(text="🛒 سفارش جدید", callback_data="menu_smmpass"),
-        InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home"),
+        InlineKeyboardButton(text="📜 تاریخچه",        callback_data="user_orders_history"),
     ])
+    buttons.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
     await cb.message.edit_text(
-        "📦 <b>سفارش‌های من</b>\n\nبرای جزئیات روی سفارش کلیک کنید:",
+        "📦 <b>سفارش‌های فعال</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "user_orders_history")
+async def user_orders_history(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    from services.panel_service import get_user_panel_orders
+    async with AsyncSessionLocal() as session:
+        all_smm   = await get_user_orders(session, db_user.id)
+        all_panel = await get_user_panel_orders(session, db_user.id, limit=50)
+    archived_smm   = [o for o in all_smm   if _is_archived(o)][:_ARCHIVE_MAX]
+    archived_panel = [o for o in all_panel if _is_archived(o)][:_ARCHIVE_MAX]
+    _ST = {
+        "completed": ("✅", "تکمیل"),
+        "partial":   ("⚠️", "ناقص"),
+        "rejected":  ("❌", "رد"),
+        "cancelled": ("❌", "کنسل"),
+    }
+    if not archived_smm and not archived_panel:
+        await cb.message.edit_text(
+            "📜 تاریخچه خالی است.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_orders")]
+            ])
+        )
+        return
+    buttons = []
+    if archived_smm:
+        buttons.append([InlineKeyboardButton(text="━━━ 🤖 SMMPass ━━━", callback_data="noop")])
+        for o in archived_smm:
+            icon, label = _ST.get(o.status, ("📌", o.status))
+            buttons.append([InlineKeyboardButton(
+                text=f"{icon} #{o.id} {(o.service_name or '')[:20]} — {label}",
+                callback_data=f"user_order_{o.id}"
+            )])
+    if archived_panel:
+        buttons.append([InlineKeyboardButton(text="━━━ 🎛 پنل دستی ━━━", callback_data="noop")])
+        for o in archived_panel:
+            icon, label = _ST.get(o.status, ("📌", o.status))
+            buttons.append([InlineKeyboardButton(
+                text=f"{icon} #{o.id} {(o.service_name or '')[:20]} — {label}",
+                callback_data=f"user_panel_order_{o.id}"
+            )])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_orders")])
+    await cb.message.edit_text(
+        "📜 <b>تاریخچه سفارشات</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode="HTML"
     )
@@ -574,34 +650,33 @@ async def user_panel_order_detail(cb: CallbackQuery, db_user: User = None):
     _PST = {
         "pending":    ("⏳", "در صف"),
         "processing": ("🔄", "در حال انجام"),
-        "completed":  ("✅", "تکمیل شده"),
+        "completed":  ("✅", "تکمیل"),
         "partial":    ("⚠️", "ناقص"),
-        "rejected":   ("❌", "رد شده"),
+        "rejected":   ("❌", "رد"),
     }
     icon, label = _PST.get(order.status, ("🟡", order.status))
+    sep = "━" * 24
     text = (
-        f"🎛 <b>سفارش پنل #{order.id}</b>\n\n"
-        f"📌 خدمت: <b>{escape(order.service_name or '')}</b>\n"
-        f"🏷 پنل: <b>{escape(order.panel_name or '')}</b>\n"
-        f"🔗 لینک: <code>{escape(order.link or '')}</code>\n"
-        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
-        f"💰 پرداخت: <b>${float(order.total_price):.4f}</b>\n"
-        f"📅 تاریخ: <b>{order.created_at.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"{icon} وضعیت: <b>{label}</b>\n"
+        f"🎛 <b>سفارش #{order.id}</b> — <b>{escape(order.panel_name or '')}</b>\n"
+        f"{sep}\n"
+        f"📌 {escape(order.service_name or '')}\n"
+        f"🔗 <code>{escape(order.link or '')}</code>\n"
+        f"🔢 {order.quantity:,}  💰 ${float(order.total_price):.4f}\n"
+        f"📅 {order.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"{sep}\n"
+        f"{icon} <b>{label}</b>\n"
     )
     if order.completed_qty is not None and order.status == "partial":
         text += f"✅ انجام شده: <b>{order.completed_qty:,}</b>\n"
     if order.refund_amount and float(order.refund_amount) > 0:
-        text += f"↩️ بازگشت وجه: <b>${float(order.refund_amount):.4f}</b>\n"
-    if order.note:
-        text += f"📝 توضیح: <i>{escape(order.note)}</i>\n"
+        text += f"↩️ بازگشت: <b>${float(order.refund_amount):.4f}</b>\n"
     if order.admin_note:
-        text += f"🔖 یادداشت ادمین: <i>{escape(order.admin_note)}</i>\n"
+        text += f"📝 {escape(order.admin_note)}\n"
+    back = "user_orders" if not _is_archived(order) else "user_orders_history"
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_orders")]
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=back)]
         ]),
         parse_mode="HTML"
     )
@@ -635,40 +710,48 @@ async def user_order_detail(cb: CallbackQuery, db_user: User = None):
                 start_count=int(live_start)   if live_start   is not None else None,
                 remains=int(live_remains)      if live_remains is not None else None,
             )
-            refunded = 0.0
             if updated and live_status in ("cancelled", "partial") and order.status != live_status:
-                refunded = await process_refund(session, updated)
+                await process_refund(session, updated)
             await session.commit()
     except Exception as e:
-        api_error = str(e)[:80]
-    icon, label = STATUS_ICONS.get(live_status, ("🟡", live_status))
+        api_error = str(e)[:60]
+    _ST = {
+        "pending":    ("⏳", "در صف"),
+        "processing": ("🔄", "در حال انجام"),
+        "completed":  ("✅", "تکمیل"),
+        "partial":    ("⚠️", "ناقص"),
+        "rejected":   ("❌", "رد"),
+        "cancelled":  ("❌", "کنسل"),
+    }
+    icon, label = _ST.get(live_status, ("🟡", live_status))
+    sep  = "━" * 24
     done = 0
     if live_start is not None and live_remains is not None:
         try: done = int(live_start) - int(live_remains)
         except Exception: done = 0
+    pname = getattr(order, 'panel_name', None) or "SMMPass"
     text = (
-        f"📦 <b>سفارش #{order.id}</b>\n\n"
-        f"🛒 سرویس: <b>{escape(order.service_name or '')}</b>\n"
-        f"🔗 لینک: <code>{escape(order.link or '')}</code>\n"
-        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
-        f"💰 پرداخت: <b>${float(order.sell_price):.4f}</b>\n"
-        f"📅 تاریخ: <b>{order.created_at.strftime('%Y-%m-%d %H:%M')}</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"{icon} وضعیت: <b>{label}</b>\n"
+        f"📦 <b>سفارش #{order.id}</b> — <b>{escape(pname)}</b>\n"
+        f"{sep}\n"
+        f"📌 {escape(order.service_name or '')}\n"
+        f"🔗 <code>{escape(order.link or '')}</code>\n"
+        f"🔢 {order.quantity:,}  💰 ${float(order.sell_price):.4f}\n"
+        f"📅 {order.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"{sep}\n"
+        f"{icon} <b>{label}</b>\n"
     )
     if live_start is not None:
-        text += f"🔢 شروع از: <b>{int(live_start):,}</b>\n"
-    if live_remains is not None:
-        text += f"⏳ باقی‌مانده: <b>{int(live_remains):,}</b>\n"
+        text += f"🔢 شروع: <b>{int(live_start):,}</b>  ⏳ باقی: <b>{int(live_remains or 0):,}</b>\n"
     if done > 0:
-        text += f"✅ انجام شده: <b>{done:,}</b>\n"
+        text += f"✅ انجام: <b>{done:,}</b>\n"
     if api_error:
-        text += f"\n⚠️ <i>خطا در دریافت وضعیت: {escape(api_error)}</i>\n"
+        text += f"⚠️ <i>{escape(api_error)}</i>\n"
+    back = "user_orders" if not _is_archived(order) else "user_orders_history"
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"user_order_{order_id}")],
-            [InlineKeyboardButton(text="🔙 بازگشت",    callback_data="user_orders")],
+            [InlineKeyboardButton(text="🔙 بازگشت",    callback_data=back)],
         ]),
         parse_mode="HTML"
     )
