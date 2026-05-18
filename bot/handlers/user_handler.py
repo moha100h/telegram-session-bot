@@ -540,6 +540,7 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
     async with AsyncSessionLocal() as session:
         all_smm   = await get_user_orders(session, db_user.id)
         all_panel = await get_user_panel_orders(session, db_user.id, limit=50)
+        smm_label = await get_setting(session, 'smm_panel_title', 'SMMPass')
     smm_act   = [o for o in all_smm   if not _archived(o)]
     panel_act = [o for o in all_panel if not _archived(o)]
     buttons = []
@@ -556,7 +557,7 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
     smm_grp   = defaultdict(list)
     panel_grp = defaultdict(list)
     for o in smm_act[:15]:
-        smm_grp[getattr(o, 'panel_name', None) or 'SMMPass'].append(o)
+        smm_grp[getattr(o, 'panel_name', None) or smm_label].append(o)
     for o in panel_act[:15]:
         panel_grp[getattr(o, 'panel_name', None) or 'پنل دستی'].append(o)
     for pname, orders in smm_grp.items():
@@ -593,6 +594,7 @@ async def user_orders_history(cb: CallbackQuery, db_user: User = None):
     from services.panel_service import get_user_panel_orders
     async with AsyncSessionLocal() as session:
         all_smm   = await get_user_orders(session, db_user.id)
+        smm_label = await get_setting(session, 'smm_panel_title', 'SMMPass')
         all_panel = await get_user_panel_orders(session, db_user.id, limit=50)
     arch_smm   = [o for o in all_smm   if _archived(o)][:_ARCH_MAX]
     arch_panel = [o for o in all_panel if _archived(o)][:_ARCH_MAX]
@@ -606,7 +608,7 @@ async def user_orders_history(cb: CallbackQuery, db_user: User = None):
         return
     buttons = []
     if arch_smm:
-        buttons.append([InlineKeyboardButton(text='━━ 🤖 SMMPass ━━', callback_data='noop')])
+        buttons.append([InlineKeyboardButton(text=f'━━ 🤖 {pname} ━━', callback_data='noop')])
         for o in arch_smm:
             ic, lb = _ST_MAP.get(o.status, ('📌', o.status))
             buttons.append([InlineKeyboardButton(
