@@ -84,7 +84,8 @@ INSERT INTO admin_settings (key, value) VALUES
     ('smm_markup_percent','20'),('smm_panel_title','🚀 پنل SMM'),('smmpass_api_key',''),
     ('min_deposit','1'),('max_deposit','1000'),
     ('backup_interval_hours','1'),('backup_auto_enabled','1'),
-    ('backup_group_id',''),('last_backup_time',''),('last_backup_size',''),('last_backup_status','')
+    ('backup_group_id',''),('last_backup_time',''),('last_backup_size',''),('last_backup_status',''),
+    ('show_user_id_in_orders','1')
 ON CONFLICT (key) DO NOTHING;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='referred_by')

@@ -233,14 +233,18 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
                 display = " ".join(parts_n) if parts_n else (user.username or str(user.telegram_id))
                 sent = await bot.send_message(
                     panel.group_chat_id,
-                    f"🆕 <b>سفارش #{oid}</b>\n{'━'*28}\n"
-                    f"👤 کاربر: <b>{escape(display)}</b> (<code>{user.telegram_id}</code>)\n"
-                    f"📌 خدمت: <b>{escape(svc_name[:50])}</b>\n"
-                    f"🔗 لینک: <code>{escape(link[:100])}</code>\n"
-                    f"🔢 تعداد: <b>{qty:,}</b>\n"
-                    f"💰 مبلغ: <b>${total:.4f}</b>\n"
-                    + (f"📝 توضیح: <i>{escape(note)}</i>\n" if note else "") +
-                    f"{'━'*28}\n⏳ وضعیت: <b>در انتظار</b>",
+                    "🆕 <b>سفارش #" + str(oid) + "</b>\n"
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    + "🏷 پنل: <b>" + escape(panel.name) + "</b>\n"
+                    + "📌 خدمت: <b>" + escape(svc_name[:50]) + "</b>\n"
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    + "👤 کاربر: <code>" + str(user.telegram_id) + "</code>"
+                    + (" (@" + escape(user.username) + ")" if user.username else "") + "\n"
+                    + "🔗 لینک: <code>" + escape(link[:100]) + "</code>\n"
+                    + "🔢 تعداد: <b>" + f"{qty:,}" + "</b>\n"
+                    + "💰 مبلغ: <b>$" + f"{total:.4f}" + "</b>\n"
+                    + ("📝 توضیح: <i>" + escape(note) + "</i>\n" if note else "")
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ وضعیت: <b>در انتظار</b>",
                     parse_mode="HTML"
                 )
                 grp_msg_id = sent.message_id

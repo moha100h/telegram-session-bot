@@ -978,48 +978,71 @@ async def adm_porder_search_handle(msg: Message, state: FSMContext):
 async def adm_porder_detail(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
     await cb.answer()
-    parts   = cb.data.split("_")
+    parts    = cb.data.split("_")
     oid, pid = int(parts[2]), int(parts[3])
     from sqlalchemy import select
-    from db.models import PanelOrder, User
+    from db.models import PanelOrder, PanelService, PanelCategory, User
     async with AsyncSessionLocal() as s:
-        res = await s.execute(
-            select(PanelOrder).where(PanelOrder.id == oid)
-        )
+        res   = await s.execute(select(PanelOrder).where(PanelOrder.id == oid))
         order = res.scalar_one_or_none()
         if not order:
-            await cb.message.edit_text("❌ سفارش یافت نشد.",
-                                       reply_markup=_back(f"adm_panel_orders_{pid}")); return
-        ur = await s.execute(select(User).where(User.id == order.user_id))
+            await cb.message.edit_text("❌ سفارش یافت نشد.", reply_markup=_back(f"adm_panel_orders_{pid}")); return
+        ur   = await s.execute(select(User).where(User.id == order.user_id))
         user = ur.scalar_one_or_none()
+        cat_name = ""
+        svc_r = await s.execute(select(PanelService).where(PanelService.id == order.service_id))
+        svc   = svc_r.scalar_one_or_none()
+        if svc:
+            cat_r = await s.execute(select(PanelCategory).where(PanelCategory.id == svc.category_id))
+            cat   = cat_r.scalar_one_or_none()
+            cat_name = (cat.icon + " " + cat.name) if cat else ""
+        from services.settings_service import get_setting as _gs
+        show_uid = await _gs(s, "show_user_id_in_orders", "1")
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━"
     STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
-    STATUS_FA    = {"pending":"در انتظار","processing":"در حال انجام",
-                    "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
-    icon = STATUS_ICONS.get(order.status, "📌")
-    uname = f"@{user.username}" if user and user.username else f"ID:{order.user_id}"
-    await cb.message.edit_text(
-        f"📦 <b>سفارش #{order.id}</b>\n{'━'*28}\n"
-        f"👤 کاربر: <b>{uname}</b>\n"
-        f"📌 خدمت: <b>{order.service_name or '—'}</b>\n"
-        f"🔗 لینک: <code>{order.link or '—'}</code>\n"
-        f"🔢 تعداد: <b>{order.quantity:,}</b>\n"
-        f"💰 مبلغ: <b>${order.total_price:.4f}</b>\n"
-        + (f"📝 توضیح: <i>{order.note}</i>\n" if order.note else "") +
-        f"{'━'*28}\n"
-        f"وضعیت: {icon} <b>{STATUS_FA.get(order.status, order.status)}</b>\n"
-        + (f"↩️ بازگشت وجه: <b>${order.refund_amount:.4f}</b>\n" if order.refund_amount else "") +
-        (f"📝 یادداشت ادمین: <i>{order.admin_note}</i>\n" if order.admin_note else "") +
-        f"⏰ زمان: {order.created_at.strftime('%Y-%m-%d %H:%M')}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏳ در انتظار",    callback_data=f"adm_porder_st_{oid}_{pid}_pending"),
-             InlineKeyboardButton(text="🔄 در حال انجام", callback_data=f"adm_porder_st_{oid}_{pid}_processing")],
-            [InlineKeyboardButton(text="✅ تکمیل شد",     callback_data=f"adm_porder_st_{oid}_{pid}_completed"),
-             InlineKeyboardButton(text="⚠️ جزئی",         callback_data=f"adm_porder_partial_{oid}_{pid}")],
-            [InlineKeyboardButton(text="❌ رد شد",         callback_data=f"adm_porder_st_{oid}_{pid}_rejected")],
-            [InlineKeyboardButton(text="🔙 بازگشت",        callback_data=f"adm_panel_orders_{pid}")],
-        ]),
-        parse_mode="HTML"
+    STATUS_FA    = {"pending":"در انتظار","processing":"در حال انجام","completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
+    icon     = STATUS_ICONS.get(order.status, "📌")
+    is_final = order.status in ("completed", "rejected")
+    panel_nm = order.panel_name or ("پنل #" + str(order.panel_id))
+    user_line = ""
+    if show_uid == "1" and user:
+        uname     = ("@" + user.username) if user.username else ""
+        user_line = "👤 کاربر: <code>" + str(user.telegram_id) + "</code>" + (" (" + uname + ")" if uname else "") + "\n"
+    svc_name  = order.service_name or "—"
+    link_val  = order.link or "—"
+    text = (
+        "📦 <b>سفارش #" + str(order.id) + "</b>\n" + SEP + "\n"
+        + "🏷 پنل: <b>" + panel_nm + "</b>\n"
+        + ("📂 دسته: <b>" + cat_name + "</b>\n" if cat_name else "")
+        + "📌 خدمت: <b>" + svc_name + "</b>\n"
+        + SEP + "\n"
+        + user_line
+        + "🔗 لینک: <code>" + link_val + "</code>\n"
+        + "🔢 تعداد: <b>" + f"{order.quantity:,}" + "</b>\n"
+        + "💰 مبلغ: <b>$" + f"{order.total_price:.4f}" + "</b>\n"
+        + ("📝 توضیح: <i>" + order.note + "</i>\n" if order.note else "")
+        + SEP + "\n"
+        + icon + " وضعیت: <b>" + STATUS_FA.get(order.status, order.status) + "</b>\n"
+        + ("✅ انجام‌شده: <b>" + f"{order.completed_qty:,}" + "</b>\n" if order.completed_qty else "")
+        + ("↩️ بازگشت وجه: <b>$" + f"{order.refund_amount:.4f}" + "</b>\n" if order.refund_amount else "")
+        + ("📝 یادداشت: <i>" + order.admin_note + "</i>\n" if order.admin_note else "")
+        + "⏰ زمان: <code>" + order.created_at.strftime("%Y-%m-%d %H:%M") + "</code>"
     )
+    rows = []
+    if not is_final:
+        rows.append([
+            InlineKeyboardButton(text="⏳ در صف",        callback_data=f"adm_porder_st_{oid}_{pid}_pending"),
+            InlineKeyboardButton(text="🔄 در حال انجام", callback_data=f"adm_porder_st_{oid}_{pid}_processing"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="✅ تکمیل شد",     callback_data=f"adm_porder_st_{oid}_{pid}_completed"),
+            InlineKeyboardButton(text="⚠️ جزئی",         callback_data=f"adm_porder_partial_{oid}_{pid}"),
+        ])
+        rows.append([InlineKeyboardButton(text="❌ رد شد", callback_data=f"adm_porder_st_{oid}_{pid}_rejected")])
+    else:
+        rows.append([InlineKeyboardButton(text=icon + " وضعیت نهایی — تغییر ممکن نیست", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_panel_orders_{pid}")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
 @router.callback_query(F.data.regexp(r"^adm_porder_st_\d+_\d+_\w+$"))
@@ -1032,6 +1055,8 @@ async def adm_porder_set_status(cb: CallbackQuery, bot: Bot):
     async with AsyncSessionLocal() as s:
         order = await get_panel_order(s, oid)
         if not order: await cb.answer("❌ یافت نشد", show_alert=True); return
+        if order.status in ("completed", "rejected"):
+            await cb.answer("⛔️ سفارش نهایی شده و قابل تغییر نیست.", show_alert=True); return
         refund = 0.0
         if status == "rejected":
             refund = await process_panel_refund(s, order, completed_qty=0)
@@ -1134,3 +1159,8 @@ async def adm_porder_partial_qty(msg: Message, state: FSMContext, bot: Bot):
                                   quantity=order.quantity, completed_qty=qty, refund=refund)
         if refund > 0:
             await notify_refund(bot, user_tg, refund, oid, "تکمیل جزئی سفارش", bal)
+
+@router.callback_query(F.data == "noop")
+async def noop_handler(cb: CallbackQuery):
+    await cb.answer()
+

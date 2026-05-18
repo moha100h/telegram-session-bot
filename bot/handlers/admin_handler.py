@@ -88,6 +88,7 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
+            [InlineKeyboardButton(text="👤 نمایش ID در سفارشات", callback_data="adm_toggle_show_uid")],
         [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup"),
          InlineKeyboardButton(text="📖 راهنما",       callback_data="adm_help")],
         [InlineKeyboardButton(text="🏠 پنل کاربری",  callback_data="user_home")],
@@ -1449,6 +1450,7 @@ async def adm_settings(cb: CallbackQuery):
         w_usdt_on = await gs(session, "wallet_usdt_enabled", "1")
         w_ton_on  = await gs(session, "wallet_ton_enabled",  "1")
         w_trx_on  = await gs(session, "wallet_trx_enabled",  "1")
+        show_uid_orders = await gs(session, "show_user_id_in_orders", "1")
     api_key_masked = vals["smmpass_api_key"][:6] + "****" if len(vals["smmpass_api_key"]) > 6 else vals["smmpass_api_key"]
     w_icons = []
     if w_usdt_on == "1": w_icons.append("🟢USDT")
@@ -1463,7 +1465,8 @@ async def adm_settings(cb: CallbackQuery):
         f"💳 کیف پول‌های فعال: <b>{w_status}</b>\n"
         f"🚀 نام دکمه SMM: <b>{vals['smm_panel_title']}</b>\n"
         f"💹 درصد سود: <b>{vals['smm_markup_percent']}%</b>\n"
-        f"🔑 API Key: <code>{api_key_masked}</code>",
+        f"🔑 API Key: <code>{api_key_masked}</code>\n"
+        + ("👤 نمایش ID در سفارشات: <b>✅ فعال</b>" if show_uid_orders == "1" else "👤 نمایش ID در سفارشات: <b>❌ غیرفعال</b>"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🤖 نام بات",        callback_data="adm_set_bot_name"),
              InlineKeyboardButton(text="👋 خوش‌آمد",        callback_data="adm_set_welcome")],
@@ -1480,6 +1483,21 @@ async def adm_settings(cb: CallbackQuery):
         parse_mode="HTML"
     )
 
+
+
+@router.callback_query(F.data == "adm_toggle_show_uid")
+async def adm_toggle_show_uid(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    async with AsyncSessionLocal() as session:
+        cur = await gs(session, "show_user_id_in_orders", "1")
+        new_val = "0" if cur == "1" else "1"
+        await ss(session, "show_user_id_in_orders", new_val)
+        await session.commit()
+    status = "✅ فعال" if new_val == "1" else "❌ غیرفعال"
+    await cb.answer(f"نمایش ID کاربر: {status}", show_alert=True)
+    cb.data = "adm_settings"
+    await adm_settings(cb)
 
 @router.callback_query(F.data == "adm_wallets")
 async def adm_wallets(cb: CallbackQuery):
