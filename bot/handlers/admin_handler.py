@@ -736,18 +736,19 @@ async def adm_credit_handle(msg: Message, state: FSMContext):
         u = await get_user_by_id(session, uid)
         if not u:
             await msg.answer("❌ کاربر یافت نشد."); return
+        old_bal = float(u.balance or 0)
         if op == "debit":
             ok = await deduct_balance(session, u.id, amount)
             if not ok:
                 await msg.answer("❌ موجودی کافی نیست."); return
-            new_bal = float(u.balance or 0) - amount
+            new_bal   = old_bal - amount
             action_fa = "کسر شد ⬇️"
-            sign = "-"
+            sign      = "-"
         else:
             await add_balance(session, u.id, amount)
-            new_bal = float(u.balance or 0) + amount
+            new_bal   = old_bal + amount
             action_fa = "اضافه شد ✅"
-            sign = "+"
+            sign      = "+"
         await session.commit()
     await msg.answer(
         f"{'✅' if op=='add' else '⬇️'} <b>{sign}${amount:.2f}</b> به <b>{u.display_name()}</b> {action_fa}\n"
