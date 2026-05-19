@@ -68,7 +68,7 @@ async def add_balance(session: AsyncSession, user_id: int, amount: float):
     if user:
         user.balance = float(user.balance or 0) + amount
         user.updated_at = datetime.utcnow()
-        await session.commit()
+        pass  # commit by caller
 
 
 async def deduct_balance(session: AsyncSession, user_id: int, amount: float) -> bool:
@@ -77,7 +77,7 @@ async def deduct_balance(session: AsyncSession, user_id: int, amount: float) -> 
     if user and float(user.balance or 0) >= amount:
         user.balance = float(user.balance) - amount
         user.updated_at = datetime.utcnow()
-        await session.commit()
+        pass  # commit by caller
         return True
     return False
 

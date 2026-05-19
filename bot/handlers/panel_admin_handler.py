@@ -780,6 +780,20 @@ async def _apply_group_status(msg: Message, bot: Bot, order_id: int, status: str
         quantity    = order.quantity
         link        = order.link or ""
         total_price = float(order.total_price)
+        panel_nm    = order.panel_name or ("پنل #" + str(order.panel_id))
+        link_val    = order.link or "—"
+        note_val    = order.note or ""
+        user_tg_id  = user.telegram_id if user else None
+        user_uname  = user.username if user else None
+        from db.models import PanelService as _PS2, PanelCategory as _PC2
+        _sr2 = await s.execute(select(_PS2).where(_PS2.id == order.service_id))
+        _svc2 = _sr2.scalar_one_or_none()
+        if _svc2:
+            _cr2 = await s.execute(select(_PC2).where(_PC2.id == _svc2.category_id))
+            _cat2 = _cr2.scalar_one_or_none()
+            cat_nm = _cat2.name if _cat2 else "—"
+        else:
+            cat_nm = "—"
         created_at  = order.created_at.strftime("%Y-%m-%d %H:%M")
         grp_msg_id  = order.group_message_id
     _ST_FA = {"pending":"در انتظار","processing":"در حال انجام",
@@ -1353,12 +1367,20 @@ async def _apply_grp_inline(cb: CallbackQuery, bot: Bot, oid: int, pid: int, sta
     status_fa = STATUS_FA.get(status, status)
     _is_final = status in ("completed", "rejected", "partial")
     # ── متن آپدیت پیام گروه ──
+    SEP2 = "━" * 28
     _new_text = (
-        f"🆕 <b>سفارش #{oid}</b>\n" + SEP + "\n"
+        f"🆕 <b>سفارش #{oid}</b>\n" + SEP2 + "\n"
+        f"🏷 پنل: <b>{panel_nm}</b>\n"
+        f"📂 دسته: <b>{cat_nm}</b>\n"
         f"📌 خدمت: <b>{svc_name[:50]}</b>\n"
+        + SEP2 + "\n"
+        f"👤 کاربر: <code>{user_tg_id}</code>"
+        + (f" (@{user_uname})" if user_uname else "") + "\n"
+        f"🔗 لینک: <code>{link_val[:100]}</code>\n"
         f"🔢 تعداد: <b>{quantity:,}</b>\n"
         f"💰 مبلغ: <b>${total_price:.4f}</b>\n"
-        + SEP + "\n"
+        + (f"📝 توضیح: <i>{note_val}</i>\n" if note_val else "")
+        + SEP2 + "\n"
         f"{icon} وضعیت: <b>{status_fa}</b>"
         + (f"\n✅ انجام‌شده: <b>{partial_qty:,}</b>" if partial_qty is not None else "")
         + (f"\n↩️ بازگشت وجه: <b>${refund:.4f}</b>" if refund > 0 else "")

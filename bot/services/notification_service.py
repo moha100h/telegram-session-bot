@@ -31,7 +31,7 @@ async def notify_user(bot, telegram_id: int, text: str):
 
 async def notify_order_confirmed(
     bot, telegram_id: int,
-    order_id: int, panel_name: str, service_name: str,
+    order_id: int, panel_name: str, cat_name: str, service_name: str,
     quantity: int, amount: float, balance: float,
 ):
     """ثبت سفارش + کسر موجودی در یک پیام"""
@@ -40,6 +40,7 @@ async def notify_order_confirmed(
         f"⏳ <b>سفارش #{order_id} ثبت شد</b>\n"
         f"{sep}\n"
         f"🏷 پنل: <b>{panel_name}</b>\n"
+        f"📂 دسته: <b>{cat_name}</b>\n"
         f"📌 خدمت: <b>{service_name[:40]}</b>\n"
         f"🔢 تعداد: <b>{quantity:,}</b>\n"
         f"💸 پرداخت: <b>${amount:.4f}</b>  |  💳 موجودی: <b>${balance:.2f}</b>"

@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from db.database import AsyncSessionLocal
 from db.models import User, Transaction
-from services.panel_service import get_panel, get_categories, get_services, get_service, create_panel_order
+from services.panel_service import get_panel, get_categories, get_services, get_service, create_panel_order, get_category
 from services.notification_service import notify_order_confirmed
 from sqlalchemy import select, update as _upd
 
@@ -214,6 +214,10 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
         panel = pr.scalar_one_or_none()
         if not panel or not panel.is_active:
             await cb.message.edit_text("❌ این پنل دیگر در دسترس نیست.", reply_markup=_back("user_home")); return
+        from db.models import PanelCategory as _PC
+        _cr  = await s.execute(select(_PC).where(_PC.id == svc.category_id))
+        _cat = _cr.scalar_one_or_none()
+        cat_name = _cat.name if _cat else "—"
         user.balance = round(bal - total, 6)
         s.add(Transaction(user_id=user.id, type="order", amount=-total,
                           status="completed", method="panel",
@@ -234,17 +238,18 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
                 sent = await bot.send_message(
                     panel.group_chat_id,
                     "🆕 <b>سفارش #" + str(oid) + "</b>\n"
-                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     + "🏷 پنل: <b>" + escape(panel.name) + "</b>\n"
+                    + "📂 دسته: <b>" + escape(cat_name) + "</b>\n"
                     + "📌 خدمت: <b>" + escape(svc_name[:50]) + "</b>\n"
-                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     + "👤 کاربر: <code>" + str(user.telegram_id) + "</code>"
                     + (" (@" + escape(user.username) + ")" if user.username else "") + "\n"
                     + "🔗 لینک: <code>" + escape(link[:100]) + "</code>\n"
                     + "🔢 تعداد: <b>" + f"{qty:,}" + "</b>\n"
                     + "💰 مبلغ: <b>$" + f"{total:.4f}" + "</b>\n"
                     + ("📝 توضیح: <i>" + escape(note) + "</i>\n" if note else "")
-                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ وضعیت: <b>در انتظار</b>",
+                    + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ وضعیت: <b>در انتظار</b>",
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [
@@ -265,7 +270,9 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
             await s.execute(_upd(_PO).where(_PO.id == oid).values(group_message_id=grp_msg_id))
         await s.commit()
     await cb.message.edit_text(
-        f"✅ <b>سفارش ثبت شد!</b>\n{'━'*28}\n"
+        f"✅ <b>سفارش ثبت شد!</b>\n{chr(9473)*28}\n"
+        f"🏷 پنل: <b>{escape(panel.name)}</b>\n"
+        f"📂 دسته: <b>{escape(cat_name)}</b>\n"
         f"📌 خدمت: <b>{escape(svc_name[:50])}</b>\n"
         f"🔢 تعداد: <b>{qty:,}</b>\n"
         f"💰 پرداخت: <b>${total:.4f}</b>\n"
@@ -278,6 +285,6 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
     )
     try:
         await notify_order_confirmed(bot, db_user.telegram_id,
-            order_id=oid, panel_name=panel.name, service_name=svc_name,
-            quantity=qty, amount=total, balance=new_bal)
+            order_id=oid, panel_name=panel.name, cat_name=cat_name,
+            service_name=svc_name, quantity=qty, amount=total, balance=new_bal)
     except Exception: pass
