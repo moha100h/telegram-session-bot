@@ -13,7 +13,7 @@ from db.database import AsyncSessionLocal
 from db.models import User, AdminUser
 from services.user_service import (
     get_all_users, get_user_by_id, ban_user, unban_user,
-    add_balance, is_admin, get_all_admins,
+    add_balance, deduct_balance, is_admin, get_all_admins,
 )
 from services.deposit_service import (
     get_pending_deposits, approve_deposit, reject_deposit,
