@@ -783,8 +783,8 @@ async def _apply_group_status(msg: Message, bot: Bot, order_id: int, status: str
         panel_nm    = order.panel_name or ("پنل #" + str(order.panel_id))
         link_val    = order.link or "—"
         note_val    = order.note or ""
-        user_tg_id  = user.telegram_id if user else None
-        user_uname  = user.username if user else None
+        user_tg_id  = order.user.telegram_id if order.user else None
+        user_uname  = order.user.username if order.user else None
         from db.models import PanelService as _PS2, PanelCategory as _PC2
         _sr2 = await s.execute(select(_PS2).where(_PS2.id == order.service_id))
         _svc2 = _sr2.scalar_one_or_none()
@@ -1360,6 +1360,20 @@ async def _apply_grp_inline(cb: CallbackQuery, bot: Bot, oid: int, pid: int, sta
         svc_name    = order.service_name or ""
         quantity    = order.quantity
         total_price = float(order.total_price)
+        panel_nm   = order.panel_name or ("پنل #" + str(order.panel_id))
+        link_val   = order.link or "—"
+        note_val   = order.note or ""
+        user_tg_id = user.telegram_id if user else None
+        user_uname = user.username if user else None
+        from db.models import PanelService as _PS2, PanelCategory as _PC2
+        _sr2  = await s.execute(select(_PS2).where(_PS2.id == order.service_id))
+        _svc2 = _sr2.scalar_one_or_none()
+        if _svc2:
+            _cr2  = await s.execute(select(_PC2).where(_PC2.id == _svc2.category_id))
+            _cat2 = _cr2.scalar_one_or_none()
+            cat_nm = _cat2.name if _cat2 else "—"
+        else:
+            cat_nm = "—"
     STATUS_FA    = {"pending":"در انتظار","processing":"در حال انجام",
                     "completed":"تکمیل شد","partial":"تکمیل جزئی","rejected":"رد شد"}
     STATUS_ICONS = {"pending":"⏳","processing":"🔄","completed":"✅","partial":"⚠️","rejected":"❌"}
