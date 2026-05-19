@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from db.database import AsyncSessionLocal
 from db.models import User, Transaction
-from services.panel_service import get_panel, get_categories, get_services, get_service, create_panel_order, get_category
+from services.panel_service import get_panel, get_categories, get_services, get_service, create_panel_order
 from services.notification_service import notify_order_confirmed
 from sqlalchemy import select, update as _upd
 
