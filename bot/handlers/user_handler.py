@@ -593,14 +593,25 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
 @router.callback_query(F.data == 'user_new_order_select')
 async def user_new_order_select(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
+    from services.panel_service import get_all_panels
+    from services.settings_service import get_setting
+    async with AsyncSessionLocal() as session:
+        panels    = await get_all_panels(session, active_only=True)
+        smm_label = await get_setting(session, 'smm_panel_title', 'SMMPass')
+    rows = []
+    # دکمه SMMPass اتوماتیک
+    rows.append([InlineKeyboardButton(text=f'🤖 {smm_label}', callback_data='menu_smmpass')])
+    # پنل‌های دستی با اسم واقعی
+    for p in panels:
+        rows.append([InlineKeyboardButton(
+            text=f'🎛 {p.name}',
+            callback_data=f'panel_user_{p.id}'
+        )])
+    rows.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
     await cb.message.edit_text(
-        "🛒 <b>سفارش جدید</b>\n\nنوع سفارش را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🤖 سفارش اتوماتیک (SMMPass)", callback_data="menu_smmpass")],
-            [InlineKeyboardButton(text="🎛 سفارش دستی (پنل‌ها)",       callback_data="user_panels_menu")],
-            [InlineKeyboardButton(text="🔙 بازگشت",                    callback_data="user_orders")],
-        ]),
-        parse_mode="HTML"
+        '🛒 <b>سفارش جدید</b>\n\nیک پنل را انتخاب کنید:',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode='HTML'
     )
 @router.callback_query(F.data == 'user_orders_history')
 async def user_orders_history(cb: CallbackQuery, db_user: User = None):
