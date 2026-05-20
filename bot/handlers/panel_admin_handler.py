@@ -351,6 +351,15 @@ async def adm_panel_edit_value(msg: Message, state: FSMContext):
         try: val = int(val)
         except ValueError:
             await msg.answer("❌ عدد صحیح وارد کنید."); return
+    elif field == "button_label":
+        if not val:
+            await msg.answer(
+                "❌ متن دکمه نمی‌تواند خالی باشد.\n"
+                "<i>یک نام معنادار وارد کنید — مثال: 💎 پنل ویژه</i>",
+                reply_markup=_cancel_kb(f"adm_panel_{pid}"),
+                parse_mode="HTML"
+            )
+            return
     elif field == "group_chat_id":
         try: val = int(val)
         except ValueError:

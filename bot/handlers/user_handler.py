@@ -51,7 +51,7 @@ async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMark
             panels = await get_all_panels(_ps, active_only=True)
         for p in panels:
             rows.append([InlineKeyboardButton(
-                text=p.button_label,
+                text=(p.button_label or p.name or f"Panel {p.id}").strip() or f"Panel {p.id}",
                 callback_data=f"panel_user_{p.id}"
             )])
     except Exception:
