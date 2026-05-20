@@ -76,6 +76,7 @@ class AdminState(StatesGroup):
     add_admin_perms    = State()
     wallet_edit_addr   = State()
     wallet_add_data    = State()
+    edit_help_section  = State()
 
 
 def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
@@ -1778,7 +1779,6 @@ SETTING_KEYS = {
     "adm_fj_text":         ("force_join_text",       "متن پیام عضویت اجباری"),
     "adm_fj_btn_join":     ("force_join_btn_text",   "متن دکمه عضویت"),
     "adm_fj_btn_verify":   ("force_join_verify_text","متن دکمه تأیید عضویت"),
-    "adm_set_help_text":  ("help_text",            "متن راهنمای کاربران"),
 }
 
 
@@ -2100,6 +2100,165 @@ async def adm_setting_val(msg: Message, state: FSMContext):
 
 
 
+
+
+
+# ── Help Manager (Admin) ───────────────────────────────────────────────────────
+
+_HELP_SECTIONS = [
+    ("help_sec_wallet", "help_text_wallet", "💳 شارژ کیف پول",
+     "۱. از منوی اصلی روی «کیف پول» بزنید\n"
+     "۲. روی «واریز» کلیک کنید\n"
+     "۳. ارز مورد نظر (USDT/TON/TRX) را انتخاب کنید\n"
+     "۴. آدرس کیف پول را کپی کرده و مبلغ را واریز کنید\n"
+     "۵. هش تراکنش را در ربات وارد کنید\n"
+     "۶. پس از تأیید ادمین، موجودی شما شارژ می‌شود"),
+    ("help_sec_order", "help_text_order", "🛒 ثبت سفارش",
+     "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+     "۲. روی «سفارش جدید» کلیک کنید\n"
+     "۳. پنل مورد نظر را انتخاب کنید\n"
+     "۴. دسته‌بندی و سرویس را انتخاب کنید\n"
+     "۵. لینک و تعداد را وارد کنید\n"
+     "۶. پرداخت را تأیید کنید"),
+    ("help_sec_track", "help_text_track", "📦 پیگیری سفارش",
+     "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+     "۲. سفارش مورد نظر را از لیست انتخاب کنید\n\n"
+     "وضعیت‌ها:\n"
+     "⏳ در انتظار | 🔄 در حال انجام\n"
+     "✅ تکمیل شد | ⚠️ تکمیل جزئی | ❌ رد شد"),
+    ("help_sec_notes", "help_text_notes", "⚠️ نکات مهم",
+     "• قبل از ثبت سفارش، موجودی کافی داشته باشید\n"
+     "• لینک وارد‌شده باید صحیح و عمومی باشد\n"
+     "• پس از تأیید پرداخت، سفارش قابل لغو نیست\n"
+     "• زمان انجام سفارش بسته به نوع سرویس متفاوت است\n"
+     "• در صورت رد سفارش، مبلغ به‌طور کامل بازگشت داده می‌شود"),
+    ("help_sec_full", "help_text", "📖 راهنمای کامل", ""),
+]
+
+_HELP_SEC_MAP = {cb_k: (db_k, lbl, dflt) for cb_k, db_k, lbl, dflt in _HELP_SECTIONS}
+
+
+@router.callback_query(F.data == "adm_set_help_text")
+async def adm_help_manager(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    rows = []
+    async with AsyncSessionLocal() as session:
+        for cb_k, db_k, lbl, dflt in _HELP_SECTIONS:
+            val    = await gs(session, db_k, dflt)
+            status = "✏️" if val.strip() and val.strip() != dflt.strip() else "📄"
+            rows.append([InlineKeyboardButton(text=f"{status} {lbl}", callback_data=f"adm_help_view_{cb_k}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت به تنظیمات", callback_data="adm_settings")])
+    await cb.message.edit_text(
+        "📖 <b>مدیریت راهنمای کاربران</b>\n\n"
+        "یک بخش را انتخاب کنید تا متن فعلی را ببینید و ویرایش کنید:\n\n"
+        "<i>📄 = پیش‌فرض | ✏️ = ویرایش‌شده توسط ادمین</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_help_view_help_sec_\w+$"))
+async def adm_help_view_section(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    sec_key = cb.data.replace("adm_help_view_", "")
+    if sec_key not in _HELP_SEC_MAP:
+        await cb.answer("بخش نامعتبر", show_alert=True); return
+    db_key, lbl, dflt = _HELP_SEC_MAP[sec_key]
+    async with AsyncSessionLocal() as session:
+        current = await gs(session, db_key, dflt)
+    is_custom = current.strip() and current.strip() != dflt.strip()
+    src_label = "✏️ ویرایش‌شده" if is_custom else "📄 پیش‌فرض"
+    display   = current if current.strip() else "(متن پیش‌فرض — هنوز ویرایش نشده)"
+    btns = [[InlineKeyboardButton(text=f"✏️ ویرایش {lbl}", callback_data=f"adm_help_edit_{sec_key}")]]
+    if is_custom:
+        btns.append([InlineKeyboardButton(text="🔄 بازنشانی به پیش‌فرض", callback_data=f"adm_help_reset_{sec_key}")])
+    btns.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_set_help_text")])
+    await cb.message.edit_text(
+        f"📝 <b>{lbl}</b>  <i>({src_label})</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{display[:900]}{'…' if len(display)>900 else ''}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_help_edit_help_sec_\w+$"))
+async def adm_help_edit_section(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    sec_key = cb.data.replace("adm_help_edit_", "")
+    if sec_key not in _HELP_SEC_MAP:
+        await cb.answer("بخش نامعتبر", show_alert=True); return
+    db_key, lbl, dflt = _HELP_SEC_MAP[sec_key]
+    async with AsyncSessionLocal() as session:
+        current = await gs(session, db_key, dflt)
+    await state.update_data(help_sec_key=sec_key, help_db_key=db_key, help_label=lbl)
+    await state.set_state(AdminState.edit_help_section)
+    display = current if current.strip() else dflt
+    await cb.message.edit_text(
+        f"✏️ <b>ویرایش: {lbl}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>متن فعلی:</b>\n"
+        f"<blockquote>{display[:700]}{'…' if len(display)>700 else ''}</blockquote>\n\n"
+        f"متن جدید را ارسال کنید:\n"
+        f"<i>HTML پشتیبانی می‌شود (b, i, code, blockquote)</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ لغو", callback_data=f"adm_help_view_{sec_key}")]
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.message(AdminState.edit_help_section)
+async def adm_help_save_section(msg: Message, state: FSMContext):
+    if not await _is_admin(msg.from_user.id): return
+    data    = await state.get_data()
+    db_key  = data.get("help_db_key")
+    lbl     = data.get("help_label", "بخش")
+    sec_key = data.get("help_sec_key")
+    await state.clear()
+    new_text = (msg.text or "").strip()
+    if not new_text:
+        await msg.answer("⚠️ متن خالی است. عملیات لغو شد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_set_help_text")]
+            ]))
+        return
+    async with AsyncSessionLocal() as session:
+        await ss(session, db_key, new_text)
+        await session.commit()
+    preview = new_text[:350] + ("…" if len(new_text) > 350 else "")
+    await msg.answer(
+        f"✅ <b>{lbl}</b> با موفقیت به‌روز شد.\n\n"
+        f"<b>پیش‌نمایش:</b>\n<blockquote>{preview}</blockquote>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"👁 مشاهده بخش",     callback_data=f"adm_help_view_{sec_key}")],
+            [InlineKeyboardButton(text="🔙 بازگشت به راهنما", callback_data="adm_set_help_text")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.regexp(r"^adm_help_reset_help_sec_\w+$"))
+async def adm_help_reset_section(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    sec_key = cb.data.replace("adm_help_reset_", "")
+    if sec_key not in _HELP_SEC_MAP:
+        await cb.answer("بخش نامعتبر", show_alert=True); return
+    db_key, lbl, _ = _HELP_SEC_MAP[sec_key]
+    async with AsyncSessionLocal() as session:
+        await ss(session, db_key, "")
+        await session.commit()
+    await cb.answer(f"✅ {lbl} به پیش‌فرض بازنشانی شد.", show_alert=True)
+    cb.data = f"adm_help_view_{sec_key}"
+    await adm_help_view_section(cb, state)
 
 # ── Force-Join Admin Panel ─────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm_force_join")

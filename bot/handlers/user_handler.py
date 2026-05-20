@@ -913,9 +913,17 @@ async def user_support(cb: CallbackQuery):
 @router.callback_query(F.data.in_(set(_HELP_TOPICS.keys())))
 async def help_topic(cb: CallbackQuery):
     await cb.answer()
+    _CB_TO_DB = {
+        "help_topic_wallet": "help_text_wallet",
+        "help_topic_order":  "help_text_order",
+        "help_topic_track":  "help_text_track",
+        "help_topic_notes":  "help_text_notes",
+    }
+    db_key = _CB_TO_DB.get(cb.data)
     async with AsyncSessionLocal() as session:
         support_url = await get_setting(session, "support_url", "")
-    text    = _HELP_TOPICS[cb.data]
+        custom_text = await get_setting(session, db_key, "") if db_key else ""
+    text    = custom_text.strip() if custom_text.strip() else _HELP_TOPICS[cb.data]
     sup_btn = _support_url_btn(support_url)
     rows    = []
     if sup_btn:
@@ -927,7 +935,6 @@ async def help_topic(cb: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML"
     )
-
 
 @router.callback_query(F.data == "help_topic_full")
 async def help_topic_full(cb: CallbackQuery):
