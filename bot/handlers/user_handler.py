@@ -124,22 +124,39 @@ async def user_home(cb: CallbackQuery, state: FSMContext, db_user: User = None):
 @router.callback_query(F.data == "user_profile")
 async def user_profile(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
-    u = db_user
-    await cb.message.edit_text(
-        f"👤 <b>پروفایل من</b>\n\n"
-        f"🔵 نام: <b>{u.display_name()}</b>\n"
-        f"🔹 یوزرنیم: @{u.username or '—'}\n"
-        f"📱 شماره: <b>{u.phone or '— تایید نشده'}</b>\n"
-        f"💰 موجودی: <b>${float(u.balance or 0):.2f}</b>\n"
-        f"👥 دعوت‌ها: <b>{u.referral_count}</b> نفر\n"
-        f"📅 عضویت: <b>{u.created_at.strftime('%Y-%m-%d')}</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📱 تایید شماره", callback_data="user_verify_phone")],
-            [InlineKeyboardButton(text="🏠 بازگشت",      callback_data="user_home")],
-        ]),
-        parse_mode="HTML"
+    u           = db_user
+    is_verified = bool(u.phone and u.phone.strip())
+    uname       = u.username or "—"
+    joined      = u.created_at.strftime("%Y-%m-%d")
+    bal         = float(u.balance or 0)
+
+    phone_line = (
+        f"📱 شماره: <b>{u.phone}</b>  ✅ <b>تایید شده</b>"
+        if is_verified else
+        "📱 شماره: ❌ <b>تایید نشده</b>"
     )
 
+    rows = []
+    if not is_verified:
+        rows.append([InlineKeyboardButton(text="📱 تایید شماره", callback_data="user_verify_phone")])
+    rows.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
+
+    text = (
+        "👤 <b>پروفایل من</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔵 نام: <b>{u.display_name()}</b>\n"
+        f"🔹 یوزرنیم: @{uname}\n"
+        f"{phone_line}\n"
+        f"💰 موجودی: <b>${bal:.2f}</b>\n"
+        f"👥 دعوت‌ها: <b>{u.referral_count}</b> نفر\n"
+        f"📅 عضویت: <b>{joined}</b>"
+    )
+
+    await cb.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "user_verify_phone")
 async def verify_phone_start(cb: CallbackQuery, state: FSMContext):
