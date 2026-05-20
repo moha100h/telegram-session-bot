@@ -246,6 +246,7 @@ async def adm_panel_detail(cb: CallbackQuery):
         [InlineKeyboardButton(text="➕ افزودن دسته‌بندی", callback_data=f"adm_panel_addcat_{pid}")],
         [InlineKeyboardButton(text="📦 سفارشات ۲۴ ساعت",  callback_data=f"adm_panel_orders_{pid}")],
         [InlineKeyboardButton(text="✏️ ویرایش دکمه",      callback_data=f"adm_panel_editlabel_{pid}"),
+         InlineKeyboardButton(text="📝 ویرایش اسم داخلی", callback_data=f"adm_panel_editname_{pid}"),
          InlineKeyboardButton(text="👥 تنظیم گروه",        callback_data=f"adm_panel_setgroup_{pid}")],
         [InlineKeyboardButton(
             text="🔴 غیرفعال کردن" if panel.is_active else "✅ فعال کردن",
@@ -299,10 +300,32 @@ async def adm_panel_del_ok(cb: CallbackQuery):
     if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
     pid = int(cb.data.split("_")[-1])
     async with AsyncSessionLocal() as s:
-        await delete_panel(s, pid)
+        ok = await delete_panel(s, pid)
         await s.commit()
-    await cb.answer("✅ پنل حذف شد")
-    await adm_panels(cb)
+    await cb.answer("✅ پنل حذف شد" if ok else "❌ پنل یافت نشد", show_alert=True)
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    async with AsyncSessionLocal() as s:
+        panels = await get_all_panels(s)
+    sep = "━" * 28
+    rows = [[InlineKeyboardButton(text="🚀 SMMPass (اتوماتیک)", callback_data="adm_smmpass")]]
+    for p in panels:
+        icon = "✅" if p.is_active else "🔴"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {p.button_label} — {p.name}",
+            callback_data=f"adm_panel_{p.id}"
+        )])
+    rows.append([InlineKeyboardButton(text="➕ ایجاد پنل دستی جدید", callback_data="adm_panel_create")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_admin")])
+    await cb.message.answer(
+        f"🎛 <b>مدیریت پنل‌ها</b>\n{sep}\n"
+        f"🎛 پنل‌های دستی: <b>{len(panels)}</b>\n\n"
+        "یک پنل را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data.regexp(r"^adm_panel_editlabel_\d+$"))
@@ -317,6 +340,22 @@ async def adm_panel_editlabel(cb: CallbackQuery, state: FSMContext):
         reply_markup=_cancel_kb(f"adm_panel_{pid}"),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data.regexp(r"^adm_panel_editname_\d+$"))
+async def adm_panel_editname(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    pid = int(cb.data.split("_")[-1])
+    await state.update_data(edit_panel_id=pid, edit_field="name")
+    await state.set_state(PanelAdminState.edit_value)
+    await cb.answer()
+    await cb.message.edit_text(
+        "📝 <b>اسم داخلی جدید پنل را وارد کنید:</b>\n"
+        "<i>این اسم فقط در پنل ادمین نمایش داده می‌شود</i>",
+        reply_markup=_cancel_kb(f"adm_panel_{pid}"),
+        parse_mode="HTML"
+    )
+
 
 @router.callback_query(F.data.regexp(r"^adm_panel_setgroup_\d+$"))
 async def adm_panel_setgroup(cb: CallbackQuery, state: FSMContext):

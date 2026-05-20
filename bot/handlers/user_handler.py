@@ -575,38 +575,110 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
             ])
         )
         return
-    smm_grp   = defaultdict(list)
-    panel_grp = defaultdict(list)
-    for o in smm_act[:15]:
-        smm_grp[getattr(o, 'panel_name', None) or smm_label].append(o)
-    for o in panel_act[:15]:
-        panel_grp[getattr(o, 'panel_name', None) or 'پنل دستی'].append(o)
-    for pname, orders in smm_grp.items():
-        buttons.append([InlineKeyboardButton(text=f'━━ 🤖 {pname} ━━', callback_data='noop')])
-        for o in orders:
-            ic, lb = _ST_MAP.get(o.status, ('🟡', o.status))
-            buttons.append([InlineKeyboardButton(
-                text=f'{ic} #{o.id}  {(o.service_name or "")[:24]}  —  {lb}',
-                callback_data=f'user_order_{o.id}'
-            )])
-    for pname, orders in panel_grp.items():
-        buttons.append([InlineKeyboardButton(text=f'━━ 🎛 {pname} ━━', callback_data='noop')])
-        for o in orders:
-            ic, lb = _ST_MAP.get(o.status, ('🟡', o.status))
-            buttons.append([InlineKeyboardButton(
-                text=f'{ic} #{o.id}  {(o.service_name or "")[:24]}  —  {lb}',
-                callback_data=f'user_panel_order_{o.id}'
-            )])
+    import hashlib as _hl2
+    from services.panel_service import get_all_panels as _gap2
+    async with AsyncSessionLocal() as _s2:
+        _panels2 = await _gap2(_s2)
+    smm_grp   = {}
+    panel_grp = {}
+    for o in smm_act[:30]:
+        k = getattr(o, 'panel_name', None) or smm_label
+        smm_grp.setdefault(k, []).append(o)
+    for o in panel_act[:30]:
+        pid_key = getattr(o, 'panel_id', None)
+        pname   = next((p.button_label or p.name for p in _panels2 if p.id == pid_key), None)
+        k = pname or getattr(o, 'panel_name', None) or 'پنل دستی'
+        panel_grp.setdefault(k, []).append(o)
+    for pname, ords in smm_grp.items():
+        h = _hl2.md5(pname.encode()).hexdigest()[:10]
+        _uord_hmap[h] = pname
+        buttons.append([InlineKeyboardButton(
+            text=f'🤖 {pname}  ({len(ords)} سفارش)',
+            callback_data=f'uord_smm_{h}'
+        )])
+    for pname, ords in panel_grp.items():
+        pid_val = getattr(ords[0], 'panel_id', 0) or 0
+        buttons.append([InlineKeyboardButton(
+            text=f'🎛 {pname}  ({len(ords)} سفارش)',
+            callback_data=f'uord_man_{pid_val}'
+        )])
     buttons.append([
         InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='user_new_order_select'),
-        InlineKeyboardButton(text='📜 تاریخچه',        callback_data='user_orders_history'),
+        InlineKeyboardButton(text='📜 تاریخچه',    callback_data='user_orders_history'),
     ])
     buttons.append([InlineKeyboardButton(text='🏠 بازگشت', callback_data='user_home')])
     await cb.message.edit_text(
-        '📦 <b>سفارش‌های فعال</b>',
+        '📦 <b>سفارش‌های فعال</b>\n\nیک پنل را انتخاب کنید:',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode='HTML'
     )
+
+
+_uord_hmap: dict = {}
+
+
+@router.callback_query(F.data.startswith('uord_smm_'))
+async def uord_smm_panel(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    h = cb.data[len('uord_smm_'):]
+    async with AsyncSessionLocal() as session:
+        all_smm   = await get_user_orders(session, db_user.id)
+        smm_label = await get_setting(session, 'smm_panel_title', 'SMMPass')
+    pname  = _uord_hmap.get(h, smm_label)
+    orders = [o for o in all_smm if not _archived(o) and (getattr(o, 'panel_name', None) or smm_label) == pname]
+    grp    = {}
+    for o in orders:
+        grp.setdefault(o.status, []).append(o)
+    buttons = []
+    for status, ords in grp.items():
+        ic, lb = _ST_MAP.get(status, ('🟡', status))
+        buttons.append([InlineKeyboardButton(text=f'━━ {ic} {lb}  ({len(ords)}) ━━', callback_data='noop')])
+        for o in ords[:10]:
+            buttons.append([InlineKeyboardButton(
+                text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}',
+                callback_data=f'user_order_{o.id}'
+            )])
+    buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    await cb.message.edit_text(
+        f'🤖 <b>{pname}</b> — سفارش‌های فعال',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode='HTML'
+    )
+
+
+@router.callback_query(F.data.startswith('uord_man_'))
+async def uord_man_panel(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    from services.panel_service import get_user_panel_orders, get_all_panels
+    try:
+        pid = int(cb.data[len('uord_man_'):])
+    except ValueError:
+        await cb.answer('❌ خطا', show_alert=True); return
+    async with AsyncSessionLocal() as session:
+        all_panel = await get_user_panel_orders(session, db_user.id, limit=100)
+        panels    = await get_all_panels(session)
+    pname  = next((p.button_label or p.name for p in panels if p.id == pid), 'پنل دستی')
+    orders = [o for o in all_panel if not _archived(o) and getattr(o, 'panel_id', None) == pid]
+    grp    = {}
+    for o in orders:
+        grp.setdefault(o.status, []).append(o)
+    buttons = []
+    for status, ords in grp.items():
+        ic, lb = _ST_MAP.get(status, ('🟡', status))
+        buttons.append([InlineKeyboardButton(text=f'━━ {ic} {lb}  ({len(ords)}) ━━', callback_data='noop')])
+        for o in ords[:10]:
+            buttons.append([InlineKeyboardButton(
+                text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}',
+                callback_data=f'user_panel_order_{o.id}'
+            )])
+    buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    await cb.message.edit_text(
+        f'🎛 <b>{pname}</b> — سفارش‌های فعال',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode='HTML'
+    )
+
+
 
 
 
@@ -637,14 +709,44 @@ async def user_new_order_select(cb: CallbackQuery, db_user: User = None):
 @router.callback_query(F.data == 'user_orders_history')
 async def user_orders_history(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
-    from services.panel_service import get_user_panel_orders
+    await _render_history(cb, db_user, 0)
+
+
+@router.callback_query(F.data.startswith('uord_hist_'))
+async def uord_hist_page(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    try:
+        page = int(cb.data[len('uord_hist_'):])
+    except ValueError:
+        page = 0
+    await _render_history(cb, db_user, page)
+
+
+async def _render_history(cb: CallbackQuery, db_user: User, page: int):
+    from services.panel_service import get_user_panel_orders, get_all_panels
+    from datetime import datetime as _dt2
+    _HPAGE = 8
     async with AsyncSessionLocal() as session:
         all_smm   = await get_user_orders(session, db_user.id)
         smm_label = await get_setting(session, 'smm_panel_title', 'SMMPass')
-        all_panel = await get_user_panel_orders(session, db_user.id, limit=50)
-    arch_smm   = [o for o in all_smm   if _archived(o)][:_ARCH_MAX]
-    arch_panel = [o for o in all_panel if _archived(o)][:_ARCH_MAX]
-    if not arch_smm and not arch_panel:
+        all_panel = await get_user_panel_orders(session, db_user.id, limit=200)
+        panels    = await get_all_panels(session)
+    combined = []
+    for o in all_smm:
+        if not _archived(o): continue
+        ts    = getattr(o, 'updated_at', None) or getattr(o, 'created_at', None)
+        pname = getattr(o, 'panel_name', None) or smm_label
+        combined.append(('smm', o, pname, ts))
+    for o in all_panel:
+        if not _archived(o): continue
+        ts      = getattr(o, 'updated_at', None) or getattr(o, 'created_at', None)
+        pid_key = getattr(o, 'panel_id', None)
+        pname   = next((p.button_label or p.name for p in panels if p.id == pid_key), None)
+        pname   = pname or getattr(o, 'panel_name', None) or 'پنل دستی'
+        combined.append(('panel', o, pname, ts))
+    combined.sort(key=lambda x: x[3] or _dt2.min, reverse=True)
+    combined = combined[:_ARCH_MAX]
+    if not combined:
         await cb.message.edit_text(
             '📜 تاریخچه خالی است.',
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -652,26 +754,31 @@ async def user_orders_history(cb: CallbackQuery, db_user: User = None):
             ])
         )
         return
+    total = max(1, -(-len(combined) // _HPAGE))
+    page  = max(0, min(page, total - 1))
+    chunk = combined[page * _HPAGE:(page + 1) * _HPAGE]
     buttons = []
-    if arch_smm:
-        buttons.append([InlineKeyboardButton(text=f'━━ 🤖 {pname} ━━', callback_data='noop')])
-        for o in arch_smm:
-            ic, lb = _ST_MAP.get(o.status, ('📌', o.status))
-            buttons.append([InlineKeyboardButton(
-                text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}  —  {lb}',
-                callback_data=f'user_order_{o.id}'
-            )])
-    if arch_panel:
-        buttons.append([InlineKeyboardButton(text='━━ 🎛 پنل دستی ━━', callback_data='noop')])
-        for o in arch_panel:
-            ic, lb = _ST_MAP.get(o.status, ('📌', o.status))
-            buttons.append([InlineKeyboardButton(
-                text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}  —  {lb}',
-                callback_data=f'user_panel_order_{o.id}'
-            )])
+    for kind, o, pname, ts in chunk:
+        ic, lb   = _ST_MAP.get(o.status, ('📌', o.status))
+        date_str = ts.strftime('%m/%d') if ts else '-'
+        sname    = (o.service_name or '')[:16]
+        cb_data  = f'user_order_{o.id}' if kind == 'smm' else f'user_panel_order_{o.id}'
+        buttons.append([InlineKeyboardButton(
+            text=f'{ic} #{o.id}  {sname}  {date_str}  [{pname[:8]}]',
+            callback_data=cb_data
+        )])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text='◀️', callback_data=f'uord_hist_{page-1}'))
+    nav.append(InlineKeyboardButton(text=f'{page+1}/{total}', callback_data='noop'))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton(text='▶️', callback_data=f'uord_hist_{page+1}'))
+    if nav:
+        buttons.append(nav)
     buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
     await cb.message.edit_text(
-        '📜 <b>تاریخچه سفارشات</b>',
+        f'📜 <b>تاریخچه سفارشات</b>  —  صفحه {page+1}/{total}\n'
+        f'<i>تکمیل / رد / کنسل شده بعد از ۲۴ ساعت</i>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode='HTML'
     )

@@ -627,7 +627,7 @@ async def adm_user_detail(cb: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━\n"
         f"🆔 TG ID: <code>{u.telegram_id}</code>\n"
         f"👤 یوزرنیم: {uname}\n"
-        f"📱 شماره: {u.phone or '—'}\n"
+        f"📱 شماره: {u.phone or '—'}  "f"{'✅ تأیید شده' if u.phone else '❌ تأیید نشده'}\n"
         f"📅 عضویت: {u.created_at.strftime('%Y-%m-%d')}\n"
         f"🔗 معرفی‌ها: <b>{u.referral_count}</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
