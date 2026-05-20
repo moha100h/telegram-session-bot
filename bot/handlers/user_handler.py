@@ -548,7 +548,7 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
         await cb.message.edit_text(
             '📦 سفارش فعالی وجود ندارد.',
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='menu_smmpass')],
+                [InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='user_new_order_select')],
                 [InlineKeyboardButton(text='📜 تاریخچه',        callback_data='user_orders_history')],
                 [InlineKeyboardButton(text='🏠 بازگشت',            callback_data='user_home')],
             ])
@@ -577,7 +577,7 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
                 callback_data=f'user_panel_order_{o.id}'
             )])
     buttons.append([
-        InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='menu_smmpass'),
+        InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='user_new_order_select'),
         InlineKeyboardButton(text='📜 تاریخچه',        callback_data='user_orders_history'),
     ])
     buttons.append([InlineKeyboardButton(text='🏠 بازگشت', callback_data='user_home')])
@@ -588,6 +588,20 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
     )
 
 
+
+
+@router.callback_query(F.data == 'user_new_order_select')
+async def user_new_order_select(cb: CallbackQuery, db_user: User = None):
+    await cb.answer()
+    await cb.message.edit_text(
+        "🛒 <b>سفارش جدید</b>\n\nنوع سفارش را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🤖 سفارش اتوماتیک (SMMPass)", callback_data="menu_smmpass")],
+            [InlineKeyboardButton(text="🎛 سفارش دستی (پنل‌ها)",       callback_data="user_panels_menu")],
+            [InlineKeyboardButton(text="🔙 بازگشت",                    callback_data="user_orders")],
+        ]),
+        parse_mode="HTML"
+    )
 @router.callback_query(F.data == 'user_orders_history')
 async def user_orders_history(cb: CallbackQuery, db_user: User = None):
     await cb.answer()
