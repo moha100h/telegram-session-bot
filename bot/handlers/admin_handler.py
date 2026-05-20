@@ -2320,21 +2320,28 @@ async def adm_smmpass(cb: CallbackQuery):
         markup    = await gs(session, "smm_markup_percent", "20")
         smm_title = await gs(session, "smm_panel_title", "🚀 پنل SMM")
         api_key   = await gs(session, "smmpass_api_key", "")
+        enabled   = await gs(session, "smm_panel_enabled", "1")
     try:
         bal_data = await get_balance()
         api_bal  = f"${bal_data.get('balance','?')} {bal_data.get('currency','USD')}"
     except Exception as e:
         api_bal = f"خطا: {str(e)[:40]}"
-    services = await get_services()
-    cats     = get_categories(services)
+    services   = await get_services()
+    cats       = get_categories(services)
     key_masked = api_key[:6] + "****" if len(api_key) > 6 else "تنظیم نشده"
+    is_enabled = enabled == "1"
+    toggle_text = "🔴 غیرفعال کردن در منوی کاربر" if is_enabled else "🟢 فعال کردن در منوی کاربر"
+    status_text = "🟢 <b>فعال</b>" if is_enabled else "🔴 <b>غیرفعال</b>"
     await cb.message.edit_text(
-        f"🚀 <b>مدیریت SMMPass</b>\n\n"
+        f"🚀 <b>مدیریت SMMPass</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📌 وضعیت در منوی کاربر: {status_text}\n"
         f"💰 موجودی API: <b>{api_bal}</b>\n"
         f"📊 سرویس‌ها: <b>{len(services)}</b> در <b>{len(cats)}</b> دسته\n"
         f"💹 درصد سود: <b>{markup}%</b>\n"
         f"🔑 API Key: <code>{key_masked}</code>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=toggle_text, callback_data="adm_smmpass_toggle")],
             [InlineKeyboardButton(text="🔑 تغییر API Key",   callback_data="adm_set_apikey"),
              InlineKeyboardButton(text="💹 درصد سود",        callback_data="adm_set_markup")],
             [InlineKeyboardButton(text="📋 دسته‌بندی‌ها",   callback_data="adm_sp_cats"),
@@ -2344,6 +2351,20 @@ async def adm_smmpass(cb: CallbackQuery):
         ]),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data == "adm_smmpass_toggle")
+async def adm_smmpass_toggle(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "smmpass"):
+        await cb.answer("⛔️", show_alert=True); return
+    async with AsyncSessionLocal() as session:
+        current = await gs(session, "smm_panel_enabled", "1")
+        new_val = "0" if current == "1" else "1"
+        await ss(session, "smm_panel_enabled", new_val)
+        await session.commit()
+    label = "🟢 فعال شد" if new_val == "1" else "🔴 غیرفعال شد"
+    await cb.answer(f"پنل SMM {label}", show_alert=True)
+    await adm_smmpass(cb)
 
 
 @router.callback_query(F.data == "adm_sp_refresh")

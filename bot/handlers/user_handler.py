@@ -42,9 +42,15 @@ class UserState(StatesGroup):
 
 
 async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMarkup:
-    """منوی داینامیک — SMMPass + پنل‌های دستی از DB"""
+    """منوی داینامیک — SMMPass (اگه فعال باشه) + پنل‌های دستی از DB"""
     rows = []
-    rows.append([InlineKeyboardButton(text=smm_title, callback_data="menu_smmpass")])
+    try:
+        async with AsyncSessionLocal() as _ss:
+            smm_enabled = await get_setting(_ss, "smm_panel_enabled", "1")
+        if smm_enabled == "1":
+            rows.append([InlineKeyboardButton(text=smm_title, callback_data="menu_smmpass")])
+    except Exception:
+        rows.append([InlineKeyboardButton(text=smm_title, callback_data="menu_smmpass")])
     try:
         from services.panel_service import get_all_panels
         async with AsyncSessionLocal() as _ps:
@@ -66,8 +72,6 @@ async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMark
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
-# ── /start ────────────────────────────────────────────────────────────────────
 @router.message(F.text.startswith("/start"))
 async def cmd_start(msg: Message, state: FSMContext,
                     db_user: User = None, is_new_user: bool = False,
@@ -192,7 +196,7 @@ async def user_wallet(cb: CallbackQuery, db_user: User = None):
     await cb.message.edit_text(
         f"💰 <b>کیف پول</b>\n\n💵 موجودی: <b>${bal:.2f}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 واریز موجودی",    callback_data="user_deposit")],
+            [InlineKeyboardButton(text="💰 افزایش موجودی",    callback_data="user_deposit")],
             [InlineKeyboardButton(text="📋 تاریخچه تراکنش",  callback_data="user_transactions")],
             [InlineKeyboardButton(text="🏠 بازگشت",          callback_data="user_home")],
         ]),

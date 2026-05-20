@@ -90,10 +90,7 @@ async def sp_entry(cb: CallbackQuery, state: FSMContext, db_user: User = None):
         "یک بخش را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🛒 سفارش جدید",   callback_data="sp_cats_0")],
-            [InlineKeyboardButton(text="📦 سفارشات من",    callback_data="user_orders")],
-            [InlineKeyboardButton(text="🔍 وضعیت سفارش",  callback_data="sp_check_status")],
-            [InlineKeyboardButton(text="💳 شارژ موجودی",   callback_data="user_deposit")],
-            [InlineKeyboardButton(text="🏠 خانه",           callback_data="user_home")],
+            [InlineKeyboardButton(text="🏠 بازگشت",     callback_data="user_home")],
         ]),
         parse_mode="HTML"
     )
