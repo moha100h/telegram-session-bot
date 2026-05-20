@@ -139,7 +139,7 @@ async def adm_panel_create(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(PanelAdminState.panel_name)
     await cb.message.edit_text(
-        "➕ <b>ایجاد پنل جدید — مرحله ۱/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>ایجاد پنل جدید — مرحله ۱/۴</b>\n{'━'*28}\n\n"
         "📝 <b>اسم داخلی پنل را وارد کنید:</b>\n"
         "<i>(فقط برای ادمین — مثال: پنل ویژه VIP)</i>",
         reply_markup=_cancel_kb("adm_panels"),
@@ -153,7 +153,7 @@ async def adm_panel_name(msg: Message, state: FSMContext):
     await state.update_data(panel_name=name)
     await state.set_state(PanelAdminState.panel_button_label)
     await msg.answer(
-        "➕ <b>ایجاد پنل جدید — مرحله ۲/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>ایجاد پنل جدید — مرحله ۲/۴</b>\n{'━'*28}\n\n"
         "🔘 <b>متن دکمه کاربر را وارد کنید:</b>\n"
         "<i>(این متن در منوی کاربر نمایش داده می‌شود — مثال: 💎 پنل ویژه)</i>",
         reply_markup=_cancel_kb("adm_panels"),
@@ -167,7 +167,7 @@ async def adm_panel_button(msg: Message, state: FSMContext):
     await state.update_data(panel_button_label=label)
     await state.set_state(PanelAdminState.panel_description)
     await msg.answer(
-        "➕ <b>ایجاد پنل جدید — مرحله ۳/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>ایجاد پنل جدید — مرحله ۳/۴</b>\n{'━'*28}\n\n"
         "📄 <b>توضیح کوتاه پنل:</b>\n"
         "<i>(اختیاری — برای نمایش به کاربر. برای رد کردن /skip بزنید)</i>",
         reply_markup=_cancel_kb("adm_panels"),
@@ -180,7 +180,7 @@ async def adm_panel_desc(msg: Message, state: FSMContext):
     await state.update_data(panel_description=desc)
     await state.set_state(PanelAdminState.panel_group_id)
     await msg.answer(
-        "➕ <b>ایجاد پنل جدید — مرحله ۴/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>ایجاد پنل جدید — مرحله ۴/۴</b>\n{'━'*28}\n\n"
         "👥 <b>آیدی گروه تلگرام برای نمایش سفارش‌ها:</b>\n"
         "<i>(بات را به گروه اضافه کنید، سپس آیدی گروه را بفرستید.\n"
         "مثال: -1001234567890\n"
@@ -446,7 +446,7 @@ async def adm_panel_addcat(cb: CallbackQuery, state: FSMContext):
     await state.set_state(PanelAdminState.cat_name)
     await cb.answer()
     await cb.message.edit_text(
-        "➕ <b>دسته‌بندی جدید — مرحله ۱/۲</b>\n{'━'*28}\n\n"
+        f"➕ <b>دسته‌بندی جدید — مرحله ۱/۲</b>\n{'━'*28}\n\n"
         "📂 <b>اسم دسته‌بندی را وارد کنید:</b>\n<i>مثال: ممبر تلگرام</i>",
         reply_markup=_cancel_kb(f"adm_panel_{pid}"),
         parse_mode="HTML"
@@ -459,7 +459,7 @@ async def adm_cat_name(msg: Message, state: FSMContext):
     await state.update_data(new_cat_name=name)
     await state.set_state(PanelAdminState.cat_icon)
     await msg.answer(
-        "➕ <b>دسته‌بندی جدید — مرحله ۲/۲</b>\n{'━'*28}\n\n"
+        f"➕ <b>دسته‌بندی جدید — مرحله ۲/۲</b>\n{'━'*28}\n\n"
         "🎨 <b>آیکون دسته را وارد کنید:</b>\n"
         "<i>یک ایموجی — مثال: 👥 یا 📈\n"
         "برای پیش‌فرض (📂) دستور /skip بزنید</i>",
@@ -566,7 +566,7 @@ async def adm_pcat_addsvc(cb: CallbackQuery, state: FSMContext):
     await state.set_state(PanelAdminState.svc_name)
     await cb.answer()
     await cb.message.edit_text(
-        "➕ <b>خدمت جدید — مرحله ۱/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>خدمت جدید — مرحله ۱/۴</b>\n{'━'*28}\n\n"
         "📌 <b>اسم خدمت را وارد کنید:</b>\n<i>مثال: ممبر واقعی ایرانی</i>",
         reply_markup=_cancel_kb(f"adm_pcat_{cid}"),
         parse_mode="HTML"
@@ -579,7 +579,7 @@ async def adm_svc_name(msg: Message, state: FSMContext):
     await state.update_data(new_svc_name=name)
     await state.set_state(PanelAdminState.svc_price)
     await msg.answer(
-        "➕ <b>خدمت جدید — مرحله ۲/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>خدمت جدید — مرحله ۲/۴</b>\n{'━'*28}\n\n"
         "💰 <b>قیمت هر واحد را وارد کنید (دلار):</b>\n"
         "<i>مثال: 0.5 یا 2.00</i>",
         reply_markup=_cancel_kb("adm_panels"),
@@ -604,7 +604,7 @@ async def adm_svc_price(msg: Message, state: FSMContext):
     await state.update_data(new_svc_price=price)
     await state.set_state(PanelAdminState.svc_min)
     await msg.answer(
-        "➕ <b>خدمت جدید — مرحله ۳/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>خدمت جدید — مرحله ۳/۴</b>\n{'━'*28}\n\n"
         "📊 <b>حداقل تعداد قابل سفارش:</b>\n<i>مثال: 100</i>",
         reply_markup=_cancel_kb("adm_panels"),
         parse_mode="HTML"
@@ -620,7 +620,7 @@ async def adm_svc_min(msg: Message, state: FSMContext):
     await state.update_data(new_svc_min=mn)
     await state.set_state(PanelAdminState.svc_max)
     await msg.answer(
-        "➕ <b>خدمت جدید — مرحله ۴/۴</b>\n{'━'*28}\n\n"
+        f"➕ <b>خدمت جدید — مرحله ۴/۴</b>\n{'━'*28}\n\n"
         f"📊 <b>حداکثر تعداد قابل سفارش:</b>\n<i>باید بیشتر از {mn:,} باشد</i>",
         reply_markup=_cancel_kb("adm_panels"),
         parse_mode="HTML"
@@ -637,32 +637,56 @@ async def adm_svc_max(msg: Message, state: FSMContext):
         await msg.answer(f"❌ باید بیشتر از {mn:,} باشد."); return
     await state.update_data(new_svc_max=mx)
     await state.set_state(PanelAdminState.svc_desc)
+    _sep = "━" * 28
     await msg.answer(
-        "➕ <b>خدمت جدید — توضیح (اختیاری)</b>\n{'━'*28}\n\n"
-        "📄 <b>توضیح خدمت:</b>\n<i>برای رد کردن /skip بزنید</i>",
-        reply_markup=_cancel_kb("adm_panels"),
+        f"➕ <b>خدمت جدید — توضیح (اختیاری)</b>\n{_sep}\n\n"
+        "📄 <b>توضیح خدمت را وارد کنید:</b>\n"
+        "<i>یا برای رد کردن روی دکمه زیر بزنید</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏭️ رد کردن (بدون توضیح)", callback_data="adm_svc_skipdesc")],
+            [InlineKeyboardButton(text="❌ لغو", callback_data="adm_panels")],
+        ]),
         parse_mode="HTML"
     )
 
 @router.message(PanelAdminState.svc_desc)
 async def adm_svc_desc(msg: Message, state: FSMContext):
-    desc = "" if (msg.text or "").strip() == "/skip" else (msg.text or "").strip()
+    desc = (msg.text or "").strip()
+    await _do_create_svc(msg, state, desc)
+
+
+@router.callback_query(F.data == "adm_svc_skipdesc")
+async def adm_svc_skipdesc(cb: CallbackQuery, state: FSMContext):
+    if not await _is_admin(cb.from_user.id): await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    await _do_create_svc(cb.message, state, "")
+
+
+async def _do_create_svc(msg, state: FSMContext, desc: str):
     data = await state.get_data()
     await state.clear()
-    async with AsyncSessionLocal() as s:
-        svc = await create_service(
-            s, data["new_svc_cat_id"], data["new_svc_name"],
-            data["new_svc_price"], data["new_svc_min"], data["new_svc_max"], desc
+    _sep = "━" * 28
+    try:
+        async with AsyncSessionLocal() as s:
+            svc = await create_service(
+                s, data["new_svc_cat_id"], data["new_svc_name"],
+                float(data["new_svc_price"]), int(data["new_svc_min"]), int(data["new_svc_max"]), desc
+            )
+            await s.commit()
+            sid = svc.id
+            cid = data["new_svc_cat_id"]
+    except Exception as e:
+        await msg.answer(
+            f"❌ <b>خطا در ذخیره‌سازی:</b>\n<code>{str(e)[:200]}</code>",
+            parse_mode="HTML"
         )
-        await s.commit()
-        sid = svc.id
-        cid = data["new_svc_cat_id"]
+        return
     await msg.answer(
-        f"✅ <b>خدمت ایجاد شد!</b>\n{'━'*28}\n"
+        f"✅ <b>خدمت ایجاد شد!</b>\n{_sep}\n"
         f"🆔 شناسه: <b>#{sid}</b>\n"
         f"📌 اسم: <b>{data['new_svc_name']}</b>\n"
-        f"💰 قیمت: <b>${data['new_svc_price']:.2f}</b> / واحد\n"
-        f"📊 حداقل: <b>{data['new_svc_min']:,}</b> | حداکثر: <b>{data['new_svc_max']:,}</b>\n"
+        f"💰 قیمت: <b>${float(data['new_svc_price']):.4f}</b> / واحد\n"
+        f"📊 حداقل: <b>{int(data['new_svc_min']):,}</b> | حداکثر: <b>{int(data['new_svc_max']):,}</b>\n"
         + (f"📄 توضیح: <i>{desc}</i>\n" if desc else ""),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ خدمت دیگر",    callback_data=f"adm_pcat_addsvc_{cid}")],
@@ -1072,7 +1096,7 @@ async def adm_porder_search_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(PanelOrderSearchState.query)
     await cb.answer()
     await cb.message.edit_text(
-        "🔍 <b>جستجوی سفارش</b>\n{'━'*28}\n\n"
+        f"🔍 <b>جستجوی سفارش</b>\n{'━'*28}\n\n"
         "شناسه سفارش، یوزرنیم یا بخشی از اسم خدمت را وارد کنید:",
         reply_markup=_cancel_kb(f"adm_panel_orders_{pid}"),
         parse_mode="HTML"
