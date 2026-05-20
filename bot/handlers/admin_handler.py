@@ -1778,6 +1778,7 @@ SETTING_KEYS = {
     "adm_fj_text":         ("force_join_text",       "متن پیام عضویت اجباری"),
     "adm_fj_btn_join":     ("force_join_btn_text",   "متن دکمه عضویت"),
     "adm_fj_btn_verify":   ("force_join_verify_text","متن دکمه تأیید عضویت"),
+    "adm_set_help_text":  ("help_text",            "متن راهنمای کاربران"),
 }
 
 
@@ -1794,6 +1795,7 @@ async def adm_settings(cb: CallbackQuery):
         w_ton_on  = await gs(session, "wallet_ton_enabled",  "1")
         w_trx_on  = await gs(session, "wallet_trx_enabled",  "1")
         show_uid_orders = await gs(session, "show_user_id_in_orders", "1")
+        help_enabled = await gs(session, "help_enabled", "1")
     api_key_masked = vals["smmpass_api_key"][:6] + "****" if len(vals["smmpass_api_key"]) > 6 else vals["smmpass_api_key"]
     w_icons = []
     if w_usdt_on == "1": w_icons.append("🟢USDT")
@@ -1809,7 +1811,8 @@ async def adm_settings(cb: CallbackQuery):
         f"🚀 نام دکمه SMM: <b>{vals['smm_panel_title']}</b>\n"
         f"💹 درصد سود: <b>{vals['smm_markup_percent']}%</b>\n"
         f"🔑 API Key: <code>{api_key_masked}</code>\n"
-        + ("👤 نمایش ID در سفارشات: <b>✅ فعال</b>" if show_uid_orders == "1" else "👤 نمایش ID در سفارشات: <b>❌ غیرفعال</b>"),
+        + ("👤 نمایش ID در سفارشات: <b>✅ فعال</b>" if show_uid_orders == "1" else "👤 نمایش ID در سفارشات: <b>❌ غیرفعال</b>")
+        + ("\n📖 راهنمای کاربران: <b>✅ فعال</b>" if help_enabled == "1" else "\n📖 راهنمای کاربران: <b>❌ غیرفعال</b>"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🤖 نام بات",        callback_data="adm_set_bot_name"),
              InlineKeyboardButton(text="👋 خوش‌آمد",        callback_data="adm_set_welcome")],
@@ -1821,6 +1824,8 @@ async def adm_settings(cb: CallbackQuery):
             [InlineKeyboardButton(text="⏰ کنسل خودکار",    callback_data="adm_set_auto_cancel"),
              InlineKeyboardButton(text="📢 عضویت اجباری",   callback_data="adm_force_join")],
             [InlineKeyboardButton(text="👤 نمایش ID: ✅ فعال" if show_uid_orders == "1" else "👤 نمایش ID: ❌ غیرفعال", callback_data="adm_toggle_show_uid")],
+            [InlineKeyboardButton(text="📖 ویرایش راهنما",  callback_data="adm_set_help_text"),
+             InlineKeyboardButton(text="📖 راهنما: ✅ فعال" if help_enabled == "1" else "📖 راهنما: ❌ غیرفعال", callback_data="adm_toggle_help")],
             [InlineKeyboardButton(text="🗄 بکاپ",            callback_data="adm_backup")],
             [InlineKeyboardButton(text="🔙 بازگشت",         callback_data="menu_admin")],
         ]),
@@ -1840,6 +1845,22 @@ async def adm_toggle_show_uid(cb: CallbackQuery):
         await session.commit()
     status = "✅ فعال" if new_val == "1" else "❌ غیرفعال"
     await cb.answer(f"نمایش ID کاربر: {status}", show_alert=True)
+    cb.data = "adm_settings"
+    await adm_settings(cb)
+
+
+
+@router.callback_query(F.data == "adm_toggle_help")
+async def adm_toggle_help(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    async with AsyncSessionLocal() as session:
+        cur = await gs(session, "help_enabled", "1")
+        new_val = "0" if cur == "1" else "1"
+        await ss(session, "help_enabled", new_val)
+        await session.commit()
+    status = "✅ فعال" if new_val == "1" else "❌ غیرفعال"
+    await cb.answer(f"راهنمای کاربران: {status}", show_alert=True)
     cb.data = "adm_settings"
     await adm_settings(cb)
 

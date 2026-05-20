@@ -764,29 +764,208 @@ async def user_order_detail(cb: CallbackQuery, db_user: User = None):
     )
 
 
-# ── Support ───────────────────────────────────────────────────────────────────
+# ── Support & Help ────────────────────────────────────────────────────────────
+
+_DEFAULT_HELP_TEXT = (
+    "📚 <b>راهنمای استفاده از ربات</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "💳 <b>شارژ کیف پول</b>\n"
+    "۱. از منوی اصلی روی «کیف پول» بزنید\n"
+    "۲. روی «واریز» کلیک کنید\n"
+    "۳. ارز مورد نظر (USDT/TON/TRX) را انتخاب کنید\n"
+    "۴. آدرس کیف پول را کپی کرده و مبلغ را واریز کنید\n"
+    "۵. هش تراکنش را در ربات وارد کنید\n"
+    "۶. پس از تأیید ادمین، موجودی شما شارژ می‌شود\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "🛒 <b>ثبت سفارش</b>\n"
+    "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+    "۲. روی «سفارش جدید» کلیک کنید\n"
+    "۳. پنل مورد نظر را انتخاب کنید\n"
+    "۴. دسته‌بندی و سرویس را انتخاب کنید\n"
+    "۵. لینک و تعداد را وارد کنید\n"
+    "۶. پرداخت را تأیید کنید\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "📦 <b>پیگیری سفارش</b>\n"
+    "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+    "۲. سفارش مورد نظر را از لیست انتخاب کنید\n\n"
+    "<b>وضعیت‌های سفارش:</b>\n"
+    "⏳ در انتظار | 🔄 در حال انجام\n"
+    "✅ تکمیل شد | ⚠️ تکمیل جزئی | ❌ رد شد\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "💰 <b>موجودی و تراکنش‌ها</b>\n"
+    "• موجودی لحظه‌ای در بخش «کیف پول» قابل مشاهده است\n"
+    "• در صورت رد سفارش، مبلغ به‌طور کامل بازگشت داده می‌شود\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "⚠️ <b>نکات مهم</b>\n"
+    "• قبل از ثبت سفارش، موجودی کافی داشته باشید\n"
+    "• لینک وارد‌شده باید صحیح و عمومی (Public) باشد\n"
+    "• پس از تأیید پرداخت، سفارش قابل لغو نیست\n"
+    "• زمان انجام سفارش بسته به نوع سرویس متفاوت است"
+)
+
+_HELP_TOPICS = {
+    "help_topic_wallet": (
+        "💳 <b>شارژ کیف پول</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "۱. از منوی اصلی روی «کیف پول» بزنید\n"
+        "۲. روی «واریز» کلیک کنید\n"
+        "۳. ارز مورد نظر (USDT/TON/TRX) را انتخاب کنید\n"
+        "۴. آدرس کیف پول را کپی کرده و مبلغ را واریز کنید\n"
+        "۵. هش تراکنش را در ربات وارد کنید\n"
+        "۶. پس از تأیید ادمین، موجودی شما شارژ می‌شود\n\n"
+        "💡 <i>حداقل مبلغ واریز بسته به ارز متفاوت است.</i>"
+    ),
+    "help_topic_order": (
+        "🛒 <b>ثبت سفارش</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+        "۲. روی «سفارش جدید» کلیک کنید\n"
+        "۳. پنل مورد نظر را انتخاب کنید\n"
+        "۴. دسته‌بندی و سرویس را انتخاب کنید\n"
+        "۵. لینک و تعداد را وارد کنید\n"
+        "۶. جزئیات را بررسی و پرداخت را تأیید کنید\n\n"
+        "💡 <i>قبل از ثبت سفارش، موجودی کافی داشته باشید.</i>"
+    ),
+    "help_topic_track": (
+        "📦 <b>پیگیری سفارش</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "۱. از منوی اصلی روی «سفارش‌های من» بزنید\n"
+        "۲. سفارش مورد نظر را از لیست انتخاب کنید\n\n"
+        "<b>وضعیت‌های سفارش:</b>\n"
+        "⏳ <b>در انتظار</b> — سفارش ثبت شده، منتظر پردازش\n"
+        "🔄 <b>در حال انجام</b> — سفارش در حال پردازش است\n"
+        "✅ <b>تکمیل شد</b> — سفارش با موفقیت انجام شد\n"
+        "⚠️ <b>تکمیل جزئی</b> — بخشی از سفارش انجام شد\n"
+        "❌ <b>رد شد</b> — سفارش رد شد، مبلغ بازگشت داده شد\n\n"
+        "💡 <i>پس از تغییر وضعیت، نوتیفیکیشن دریافت می‌کنید.</i>"
+    ),
+    "help_topic_notes": (
+        "⚠️ <b>نکات مهم</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "• قبل از ثبت سفارش، موجودی کافی داشته باشید\n"
+        "• لینک وارد‌شده باید صحیح و عمومی (Public) باشد\n"
+        "• پس از تأیید پرداخت، سفارش قابل لغو نیست\n"
+        "• زمان انجام سفارش بسته به نوع سرویس متفاوت است\n"
+        "• در صورت رد سفارش، مبلغ به‌طور کامل بازگشت داده می‌شود\n"
+        "• در صورت تکمیل جزئی، مابقی مبلغ بازگشت داده می‌شود\n\n"
+        "💡 <i>در صورت بروز مشکل، با پشتیبانی تماس بگیرید.</i>"
+    ),
+}
+
+
+def _support_url_btn(support_url: str) -> list:
+    """ساخت دکمه ارتباط با پشتیبانی"""
+    if support_url and support_url.startswith("http"):
+        return [InlineKeyboardButton(text="💬 ارتباط با پشتیبانی", url=support_url)]
+    elif support_url and support_url.startswith("@"):
+        return [InlineKeyboardButton(
+            text="💬 ارتباط با پشتیبانی",
+            url=f"https://t.me/{support_url.lstrip('@')}"
+        )]
+    return []
+
+
 @router.callback_query(F.data == "user_support")
 async def user_support(cb: CallbackQuery):
     await cb.answer()
     async with AsyncSessionLocal() as session:
-        support_url = await get_setting(session, "support_url", "")
-    buttons = []
-    if support_url and support_url.startswith("http"):
-        buttons.append([InlineKeyboardButton(text="💬 ارتباط با پشتیبانی", url=support_url)])
-    elif support_url and support_url.startswith("@"):
-        buttons.append([InlineKeyboardButton(
-            text="💬 ارتباط با پشتیبانی",
-            url=f"https://t.me/{support_url.lstrip('@')}"
-        )])
-    buttons.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
-    text = (
-        "📞 <b>پشتیبانی</b>\n\n"
-        "برای ارتباط با تیم پشتیبانی کلیک کنید 👇"
-        if support_url else
-        "📞 <b>پشتیبانی</b>\n\n⚠️ در حال حاضر پشتیبانی آنلاین در دسترس نیست."
-    )
+        support_url  = await get_setting(session, "support_url", "")
+        help_enabled = await get_setting(session, "help_enabled", "1")
+
+    rows = []
+    if help_enabled == "1":
+        rows.append([
+            InlineKeyboardButton(text="💳 شارژ کیف پول",  callback_data="help_topic_wallet"),
+            InlineKeyboardButton(text="🛒 ثبت سفارش",      callback_data="help_topic_order"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📦 پیگیری سفارش",  callback_data="help_topic_track"),
+            InlineKeyboardButton(text="⚠️ نکات مهم",       callback_data="help_topic_notes"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📖 راهنمای کامل",  callback_data="help_topic_full"),
+        ])
+        rows.append([InlineKeyboardButton(text="─────────────────", callback_data="noop")])
+
+    sup_btn = _support_url_btn(support_url)
+    if sup_btn:
+        rows.append(sup_btn)
+    rows.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
+
+    if help_enabled == "1":
+        txt = (
+            "📞 <b>پشتیبانی و راهنما</b>\n\n"
+            "برای مشاهده راهنما یک موضوع را انتخاب کنید 👇\n"
+            "یا مستقیماً با پشتیبانی در ارتباط باشید."
+        )
+    elif sup_btn:
+        txt = "📞 <b>پشتیبانی</b>\n\nبرای ارتباط با تیم پشتیبانی کلیک کنید 👇"
+    else:
+        txt = "📞 <b>پشتیبانی</b>\n\n⚠️ در حال حاضر پشتیبانی آنلاین در دسترس نیست."
+
     await cb.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        txt,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML"
     )
+
+
+@router.callback_query(F.data.in_(set(_HELP_TOPICS.keys())))
+async def help_topic(cb: CallbackQuery):
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        support_url = await get_setting(session, "support_url", "")
+    text    = _HELP_TOPICS[cb.data]
+    sup_btn = _support_url_btn(support_url)
+    rows    = []
+    if sup_btn:
+        rows.append(sup_btn)
+    rows.append([InlineKeyboardButton(text="❓ هنوز مشکل دارم", callback_data="help_still_problem")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت",          callback_data="user_support")])
+    await cb.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "help_topic_full")
+async def help_topic_full(cb: CallbackQuery):
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        support_url = await get_setting(session, "support_url", "")
+        help_text   = await get_setting(session, "help_text", "")
+    text    = help_text.strip() if help_text.strip() else _DEFAULT_HELP_TEXT
+    sup_btn = _support_url_btn(support_url)
+    rows    = []
+    if sup_btn:
+        rows.append(sup_btn)
+    rows.append([InlineKeyboardButton(text="❓ هنوز مشکل دارم", callback_data="help_still_problem")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت",          callback_data="user_support")])
+    await cb.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "help_still_problem")
+async def help_still_problem(cb: CallbackQuery):
+    await cb.answer()
+    async with AsyncSessionLocal() as session:
+        support_url = await get_setting(session, "support_url", "")
+    sup_btn = _support_url_btn(support_url)
+    rows    = []
+    if sup_btn:
+        rows.append(sup_btn)
+    else:
+        rows.append([InlineKeyboardButton(text="⚠️ پشتیبانی در دسترس نیست", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_support")])
+    await cb.message.edit_text(
+        "❓ <b>هنوز مشکل دارید؟</b>\n\n"
+        "تیم پشتیبانی آماده کمک به شماست.\n"
+        "روی دکمه زیر کلیک کنید تا با ما در ارتباط باشید 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
