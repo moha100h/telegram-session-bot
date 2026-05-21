@@ -550,17 +550,21 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         await wait_msg.delete()
 
         _sep = "━" * 28
+        _icon = "✅" if result.ok else "⚠️"
+        _msg_text = (
+            f"{_icon} <b>درخواست واریز ثبت شد!</b>\n"
+            + f"{_sep}\n"
+            + f"💵 مبلغ:    <b>${amount:,.2f}</b>\n"
+            + f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
+            + f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n"
+            + f"{_sep}\n\n"
+            + f"🤖 <b>بررسی بات:</b> {bot_status}\n"
+            + f"📋 {bot_note}\n\n"
+            + f"{_sep}\n"
+            + t("deposit_await_admin", lang)
+        )
         await msg.answer(
-            f"{'✅' if result.ok else '⚠️'} <b>درخواست واریز ثبت شد!</b>\n"
-            f"{_sep}\n"
-            f"💵 مبلغ:    <b>${amount:,.2f}</b>\n"
-            f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
-            f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n"
-            f"{_sep}\n\n"
-            f"🤖 <b>بررسی بات:</b> {bot_status}\n"
-            f"📋 {bot_note}\n\n"
-            f"{_sep}\n"
-            ft("deposit_await_admin", lang),
+            _msg_text,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')]
             ]),
