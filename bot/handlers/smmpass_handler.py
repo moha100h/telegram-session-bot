@@ -19,12 +19,17 @@ from services.user_service import deduct_balance, add_balance
 from services.order_service import create_order
 from services.settings_service import get_setting
 from services.order_service import calc_order_price
+from i18n import t as _t
 
 logger   = logging.getLogger("smm_user")
 router   = Router()
 PAGE_CAT = 5
 PAGE_SVC = 6
 _cat_map: dict = {}
+
+def _lang(db_user) -> str:
+    return getattr(db_user, "language", None) or "fa"
+
 
 def _ch(cat: str) -> str:
     h = hashlib.md5(cat.encode()).hexdigest()[:8]
@@ -410,7 +415,7 @@ async def sp_confirm(cb: CallbackQuery, state: FSMContext, db_user: User = None)
             ]),
             parse_mode="HTML"
         ); return
-    await cb.message.edit_text("⏳ <b>در حال ثبت سفارش...</b>", parse_mode="HTML")
+    await cb.message.edit_text(_t("smm_placing", _lang(db_user)), parse_mode="HTML")
     async with AsyncSessionLocal() as _s:
         panel_title = await get_setting(_s, "smm_panel_title", "SMMPass")
     async with AsyncSessionLocal() as session:
