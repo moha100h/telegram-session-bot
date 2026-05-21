@@ -6,19 +6,24 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from db.database import AsyncSessionLocal
 from db.models import User
-from services.panel_service import get_panel, get_categories, get_services_by_cat, get_service
-from services.order_service import create_order
+from services.panel_service import (
+    get_panel, get_categories, get_services, get_service,
+    get_category, create_panel_order
+)
 from services.user_service import get_user_by_telegram_id, deduct_balance
 from services.notification_service import notify_order_placed, notify_group_new_order
 from i18n import t
 router = Router()
+
 class PanelUserState(StatesGroup):
     order_link = State()
     order_qty  = State()
     order_note = State()
+
 def _kb(*rows): return InlineKeyboardMarkup(inline_keyboard=list(rows))
 def _back(cb, lang="en"): return _kb([InlineKeyboardButton(text=t("btn_back",lang), callback_data=cb)])
 def _cancel(cb="user_home", lang="en"): return _kb([InlineKeyboardButton(text=t("btn_cancel",lang), callback_data=cb)])
+
 @router.callback_query(F.data.regexp(r"^panel_user_\d+$"))
 async def panel_user_cats(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
     await cb.answer()
@@ -33,20 +38,21 @@ async def panel_user_cats(cb: CallbackQuery, db_user: User = None, user_lang: st
     rows = [[InlineKeyboardButton(text=f"{c.icon or ''} {escape(c.name)}".strip(), callback_data=f"panel_cat_{c.id}_{pid}")] for c in cats]
     rows.append([InlineKeyboardButton(text=t("btn_home",lang), callback_data="user_home")])
     await cb.message.edit_text(f"<b>{escape(panel.button_label or panel.name)}</b>\n{'━'*28}{desc}\n\n{t('choose_category',lang)}", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
 @router.callback_query(F.data.regexp(r"^panel_cat_\d+_\d+$"))
 async def panel_user_svcs(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
     await cb.answer()
     lang = getattr(db_user,"language",None) or user_lang or "en"
     _, _, cid, pid = cb.data.split("_"); cid, pid = int(cid), int(pid)
     async with AsyncSessionLocal() as s:
-        from services.panel_service import get_category
-        cat = await get_category(s, cid)
-        svcs = await get_services_by_cat(s, cid, active_only=True)
+        cat  = await get_category(s, cid)
+        svcs = await get_services(s, cid, active_only=True)
     if not cat:
         await cb.message.edit_text(t("cat_not_found",lang), reply_markup=_back(f"panel_user_{pid}",lang)); return
     rows = [[InlineKeyboardButton(text=f"📌 {escape(sv.name)} — ${sv.price:.2f}", callback_data=f"panel_svc_{sv.id}_{pid}")] for sv in svcs]
     rows.append([InlineKeyboardButton(text=t("btn_back",lang), callback_data=f"panel_user_{pid}")])
     await cb.message.edit_text(f"{cat.icon or ''} <b>{escape(cat.name)}</b>\n{'━'*28}\n\n{t('choose_service',lang)}", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
 @router.callback_query(F.data.regexp(r"^panel_svc_\d+_\d+$"))
 async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: User = None, user_lang: str = "en"):
     await cb.answer()
@@ -59,8 +65,12 @@ async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: U
         await cb.message.edit_text(t("svc_not_found",lang), reply_markup=_back(f"panel_user_{pid}",lang)); return
     desc_line = f"\n📄 {escape(svc.description)}" if svc.description else ""
     text = f"📌 <b>{escape(svc.name)}</b>\n{'━'*28}{desc_line}\n💰 {t('order_cost',lang)}: <b>${svc.price:.4f}</b>\n{t('smm_min_max',lang,mn=svc.min_qty,mx=svc.max_qty)}\n{t('smm_your_balance',lang,bal=f'{bal:.2f}')}"
-    rows = [[InlineKeyboardButton(text=t("btn_new_order",lang), callback_data=f"panel_order_start_{sid}_{pid}")],[InlineKeyboardButton(text=t("btn_back",lang), callback_data=f"panel_cat_{svc.category_id}_{pid}")]]
+    rows = [
+        [InlineKeyboardButton(text=t("btn_new_order",lang), callback_data=f"panel_order_start_{sid}_{pid}")],
+        [InlineKeyboardButton(text=t("btn_back",lang), callback_data=f"panel_cat_{svc.category_id}_{pid}")]
+    ]
     await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
 @router.callback_query(F.data.regexp(r"^panel_order_start_\d+_\d+$"))
 async def panel_order_start(cb: CallbackQuery, state: FSMContext, db_user: User = None, user_lang: str = "en"):
     await cb.answer()
@@ -73,6 +83,7 @@ async def panel_order_start(cb: CallbackQuery, state: FSMContext, db_user: User 
     await state.set_state(PanelUserState.order_link)
     await state.update_data(svc_id=sid, panel_id=pid, lang=lang)
     await cb.message.edit_text(f"🛒 <b>{escape(svc.name)}</b>\n{'━'*28}\n\n{t('enter_link',lang)}", reply_markup=_cancel(f"panel_user_{pid}",lang), parse_mode="HTML")
+
 @router.message(PanelUserState.order_link)
 async def panel_order_link(msg: Message, state: FSMContext, db_user: User = None, user_lang: str = "en"):
     lang = getattr(db_user,"language",None) or user_lang or "en"
@@ -85,6 +96,7 @@ async def panel_order_link(msg: Message, state: FSMContext, db_user: User = None
     async with AsyncSessionLocal() as s:
         svc = await get_service(s, data["svc_id"])
     await msg.answer(t("enter_qty",lang,mn=svc.min_qty,mx=svc.max_qty), reply_markup=_cancel(f"panel_user_{pid}",lang), parse_mode="HTML")
+
 @router.message(PanelUserState.order_qty)
 async def panel_order_qty(msg: Message, state: FSMContext, db_user: User = None, user_lang: str = "en"):
     lang = getattr(db_user,"language",None) or user_lang or "en"
@@ -102,6 +114,7 @@ async def panel_order_qty(msg: Message, state: FSMContext, db_user: User = None,
     await state.update_data(qty=qty)
     await state.set_state(PanelUserState.order_note)
     await msg.answer(t("enter_note",lang), reply_markup=_cancel(f"panel_user_{pid}",lang), parse_mode="HTML")
+
 @router.message(PanelUserState.order_note)
 async def panel_order_note(msg: Message, state: FSMContext, db_user: User = None, user_lang: str = "en"):
     lang = getattr(db_user,"language",None) or user_lang or "en"
@@ -113,12 +126,22 @@ async def panel_order_note(msg: Message, state: FSMContext, db_user: User = None
         bal = float(db_user.balance or 0) if db_user else 0.0
     qty = data["qty"]; link = data["link"]; total = round(svc.price * qty, 4)
     bal_ok = bal >= total; sep = "━" * 28
-    text = (f"{t('order_confirm_title',lang)}\n{sep}\n{t('order_panel',lang)}: <b>{escape(svc.name[:50])}</b>\n{t('order_link_lbl',lang)}: <code>{escape(link)}</code>\n{t('order_qty_lbl',lang)}: <b>{qty:,}</b>\n" + (f"{t('order_note_lbl',lang)}: <i>{escape(note)}</i>\n" if note else "") + f"{sep}\n{t('order_cost',lang)}: <b>${total:.4f}</b>\n💳 {t('balance_label',lang)}: <b>${bal:.2f}</b>\n\n" + (t("order_bal_ok",lang) if bal_ok else t("order_bal_low",lang)))
+    text = (
+        f"{t('order_confirm_title',lang)}\n{sep}\n"
+        f"{t('order_panel',lang)}: <b>{escape(svc.name[:50])}</b>\n"
+        f"{t('order_link_lbl',lang)}: <code>{escape(link)}</code>\n"
+        f"{t('order_qty_lbl',lang)}: <b>{qty:,}</b>\n"
+        + (f"{t('order_note_lbl',lang)}: <i>{escape(note)}</i>\n" if note else "")
+        + f"{sep}\n{t('order_cost',lang)}: <b>${total:.4f}</b>\n"
+        f"💳 {t('balance_label',lang)}: <b>${bal:.2f}</b>\n\n"
+        + (t("order_bal_ok",lang) if bal_ok else t("order_bal_low",lang))
+    )
     rows = []
     if bal_ok: rows.append([InlineKeyboardButton(text=t("btn_confirm",lang), callback_data="panel_confirm")])
     else:      rows.append([InlineKeyboardButton(text=t("btn_charge",lang),  callback_data="user_deposit")])
     rows.append([InlineKeyboardButton(text=t("btn_cancel",lang), callback_data=f"panel_user_{pid}")])
     await msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
 @router.callback_query(F.data == "panel_confirm")
 async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user: User = None, user_lang: str = "en"):
     lang = getattr(db_user,"language",None) or user_lang or "en"
@@ -140,18 +163,36 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
         qty = data["qty"]; link = data["link"]; note = data.get("note","")
         total = round(svc.price * qty, 4); bal = float(user.balance or 0)
         if bal < total:
-            await cb.message.edit_text(t("insufficient_balance",lang), reply_markup=_kb([InlineKeyboardButton(text=t("btn_charge",lang), callback_data="user_deposit")],[InlineKeyboardButton(text=t("btn_home",lang), callback_data="user_home")])); return
+            await cb.message.edit_text(t("insufficient_balance",lang), reply_markup=_kb(
+                [InlineKeyboardButton(text=t("btn_charge",lang), callback_data="user_deposit")],
+                [InlineKeyboardButton(text=t("btn_home",lang),   callback_data="user_home")]
+            )); return
         ok, new_bal = await deduct_balance(s, user.id, total)
         if not ok:
             await cb.message.edit_text(t("order_deduct_error",lang), reply_markup=_back("user_home",lang)); return
-        from services.panel_service import get_category
-        _cat = await get_category(s, svc.category_id)
+        _cat     = await get_category(s, svc.category_id)
         cat_name = _cat.name if _cat else "—"
-        order = await create_order(s, user_id=user.id, panel_id=panel.id, service_id=svc.id, link=link, quantity=qty, amount=total, note=note, description=f"Panel order — {svc.name[:50]}")
+        order = await create_panel_order(
+            s, user_id=user.id, panel_id=panel.id, service_id=svc.id,
+            link=link, quantity=qty, amount=total, note=note
+        )
         await s.commit(); oid = order.id
     await state.clear()
     sep = "━" * 28
-    await cb.message.edit_text(f"{t('order_confirmed',lang)}\n{sep}\n{t('order_panel',lang)}: <b>{escape(panel.name)}</b>\n{t('order_cat',lang)}: <b>{escape(cat_name)}</b>\n{t('order_service',lang)}: <b>{escape(svc.name[:50])}</b>\n{t('order_qty_lbl',lang)}: <b>{qty:,}</b>\n{t('order_paid',lang)}: <b>${total:.4f}</b>\n{t('order_bal_after',lang)}: <b>${new_bal:.2f}</b>\n\n{t('order_waiting',lang)}", reply_markup=_kb([InlineKeyboardButton(text=t("btn_my_orders",lang), callback_data="user_orders")],[InlineKeyboardButton(text=t("btn_home",lang), callback_data="user_home")]), parse_mode="HTML")
+    await cb.message.edit_text(
+        f"{t('order_confirmed',lang)}\n{sep}\n"
+        f"{t('order_panel',lang)}: <b>{escape(panel.name)}</b>\n"
+        f"{t('order_cat',lang)}: <b>{escape(cat_name)}</b>\n"
+        f"{t('order_service',lang)}: <b>{escape(svc.name[:50])}</b>\n"
+        f"{t('order_qty_lbl',lang)}: <b>{qty:,}</b>\n"
+        f"{t('order_paid',lang)}: <b>${total:.4f}</b>\n"
+        f"{t('order_bal_after',lang)}: <b>${new_bal:.2f}</b>\n\n"
+        f"{t('order_waiting',lang)}",
+        reply_markup=_kb(
+            [InlineKeyboardButton(text=t("btn_my_orders",lang), callback_data="user_orders")],
+            [InlineKeyboardButton(text=t("btn_home",lang),      callback_data="user_home")]
+        ), parse_mode="HTML"
+    )
     try: await notify_order_placed(bot, user.telegram_id, oid, panel.name, cat_name, svc.name, qty, total, new_bal, lang=lang)
     except Exception: pass
     try: await notify_group_new_order(bot, oid, panel, cat_name, svc.name, user, link, qty, total, note)
