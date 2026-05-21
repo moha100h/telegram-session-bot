@@ -1175,3 +1175,35 @@ async def help_still_problem(cb: CallbackQuery):
         parse_mode="HTML"
     )
 
+
+
+@router.callback_query(F.data.startswith("set_lang_"))
+async def user_set_lang(cb: CallbackQuery, db_user=None):
+    lc = cb.data.replace("set_lang_", "")
+    if lc not in LANGUAGES:
+        await cb.answer("❌ Invalid language", show_alert=True); return
+    from db.database import AsyncSessionLocal
+    from services.user_service import get_user_by_telegram_id
+    async with AsyncSessionLocal() as s:
+        u = await get_user_by_telegram_id(s, cb.from_user.id)
+        if u:
+            u.language = lc
+            await s.commit()
+    await cb.answer(_t("lang_saved", lc), show_alert=True)
+
+
+@router.callback_query(F.data == "user_change_lang")
+async def user_change_lang(cb: CallbackQuery, db_user=None):
+    await cb.answer()
+    from db.database import AsyncSessionLocal
+    from services.settings_service import get_setting as _gs
+    async with AsyncSessionLocal() as s:
+        ar = await _gs(s, "active_languages", "en,fa,ar,he,ru")
+    active = [x.strip() for x in ar.split(",") if x.strip() in LANGUAGES]
+    if not active: active = list(LANGUAGES.keys())
+    lang = getattr(db_user, "language", None) or "fa"
+    kb = lang_keyboard(active)
+    kb.inline_keyboard.append([InlineKeyboardButton(text=_t("btn_back", lang), callback_data="user_profile")])
+    cur = getattr(db_user, "language", None) or "fa"
+    body = "\n".join(("✅ " if cur == c else "○ ") + v for c, v in LANGUAGES.items() if c in active)
+    await cb.message.edit_text(f"🌐 <b>{_t('adm_lang_title', lang)}</b>\n\n{body}", reply_markup=kb, parse_mode="HTML")
