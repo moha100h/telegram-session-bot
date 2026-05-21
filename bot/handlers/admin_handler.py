@@ -2687,9 +2687,7 @@ async def adm_cancel_handler(cb: CallbackQuery, state: FSMContext):
 
 
 
-# ═══════════════════════════════════════════════════════════════
-#  LANGUAGE MANAGEMENT
-# ═══════════════════════════════════════════════════════════════
+# ═══ LANGUAGE MANAGEMENT ═══
 
 def _build_lang_keyboard(active_langs: list, default_lang: str) -> InlineKeyboardMarkup:
     rows = []
@@ -2701,7 +2699,6 @@ def _build_lang_keyboard(active_langs: list, default_lang: str) -> InlineKeyboar
     rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
 async def _get_lang_settings(session) -> tuple:
     active_raw   = await gs(session, "active_languages", "en,fa,ar,he,ru")
     default_lang = await gs(session, "default_language",  "fa")
@@ -2709,12 +2706,10 @@ async def _get_lang_settings(session) -> tuple:
     if not active: active = list(LANGUAGES.keys())
     return active, default_lang
 
-
 async def _save_lang_settings(session, active_langs: list, default_lang: str):
     await ss(session, "active_languages", ",".join(active_langs))
     await ss(session, "default_language", default_lang)
     await session.commit()
-
 
 def _lang_page_text(active: list, default_lang: str) -> str:
     sep = "━" * 28
@@ -2722,7 +2717,6 @@ def _lang_page_text(active: list, default_lang: str) -> str:
             f"📊 فعال: <b>{len(active)}</b> از <b>{len(LANGUAGES)}</b>\n"
             f"⭐ پیش‌فرض: <b>{LANGUAGES.get(default_lang, default_lang)}</b>\n\n"
             f"<i>💡 ✅/❌ = فعال/غیرفعال  |  ⭐ = تنظیم پیش‌فرض</i>")
-
 
 @router.callback_query(F.data == "adm_languages")
 async def adm_languages(cb: CallbackQuery):
@@ -2733,7 +2727,6 @@ async def adm_languages(cb: CallbackQuery):
         active, default_lang = await _get_lang_settings(s)
     await cb.message.edit_text(_lang_page_text(active, default_lang),
         reply_markup=_build_lang_keyboard(active, default_lang), parse_mode="HTML")
-
 
 @router.callback_query(F.data.startswith("adm_lang_toggle_"))
 async def adm_lang_toggle(cb: CallbackQuery):
@@ -2759,7 +2752,6 @@ async def adm_lang_toggle(cb: CallbackQuery):
         await cb.message.edit_text(_lang_page_text(active, default_lang),
             reply_markup=_build_lang_keyboard(active, default_lang), parse_mode="HTML")
     except Exception: pass
-
 
 @router.callback_query(F.data.startswith("adm_lang_default_"))
 async def adm_lang_set_default(cb: CallbackQuery):
