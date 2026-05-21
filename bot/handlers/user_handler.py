@@ -147,16 +147,16 @@ async def cmd_start(msg: Message, state: FSMContext,
     bal  = float(db_user.balance or 0) if db_user else 0
     if is_superadmin or is_admin:
         await msg.answer(
-            f"👋 <b>{name}</b> | 🔑 ادمین\n💰 موجودی: <b>${bal:.2f}</b>\n\nیک بخش را انتخاب کنید:",
+            f"👋 <b>{name}</b> | 🔑 Admin\n{t('balance_label',lang)}: <b>${bal:.2f}</b>\n\n{t('choose_section',lang)}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔧 پنل مدیریت", callback_data="menu_admin")],
-                [InlineKeyboardButton(text="👤 پنل کاربری",  callback_data="user_home")],
+                [InlineKeyboardButton(text=t("admin_panel_btn",lang), callback_data="menu_admin")],
+                [InlineKeyboardButton(text=t("user_panel_btn",lang), callback_data="user_home")],
             ]),
             parse_mode="HTML"
         )
         return
     async with AsyncSessionLocal() as _s:
-        smm_title = await get_setting(_s, "smm_panel_title", "🛒 پنل SMM")
+        smm_title = await get_setting(_s, "smm_panel_title", "🛒 SMM Panel")
     await msg.answer(
         f"🚀 <b>{bot_name}</b>\n\n"
         f"👋 {welcome}\n"
@@ -197,7 +197,8 @@ async def user_home(cb: CallbackQuery, state: FSMContext, db_user: User = None):
 
 # ── Profile ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_profile")
-async def user_profile(cb: CallbackQuery, db_user: User = None):
+async def user_profile(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     u           = db_user
     is_verified = bool(u.phone and u.phone.strip())
@@ -206,25 +207,24 @@ async def user_profile(cb: CallbackQuery, db_user: User = None):
     bal         = float(u.balance or 0)
 
     phone_line = (
-        f"📱 شماره: <b>{u.phone}</b>  ✅ <b>تایید شده</b>"
+        t("profile_phone_ok", lang).format(phone=u.phone)
         if is_verified else
-        "📱 شماره: ❌ <b>تایید نشده</b>"
+        t("profile_phone_no", lang)
     )
 
     rows = []
     if not is_verified:
-        rows.append([InlineKeyboardButton(text="📱 تایید شماره", callback_data="user_verify_phone")])
-    rows.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
+        rows.append([InlineKeyboardButton(text=t("btn_verify_phone",lang), callback_data="user_verify_phone")])
+    rows.append([InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')])
 
     text = (
-        "👤 <b>پروفایل من</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔵 نام: <b>{u.display_name()}</b>\n"
-        f"🔹 یوزرنیم: @{uname}\n"
+        t("profile_title", lang) + "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{t('profile_name',lang)}: <b>{u.display_name()}</b>\n"
+        f"{t('profile_username',lang)}: @{uname}\n"
         f"{phone_line}\n"
-        f"💰 موجودی: <b>${bal:.2f}</b>\n"
-        f"👥 دعوت‌ها: <b>{u.referral_count}</b> نفر\n"
-        f"📅 عضویت: <b>{joined}</b>"
+        f"{t('profile_balance',lang)}: <b>${bal:.2f}</b>\n"
+        f"{t('profile_referrals',lang)}: <b>{u.referral_count}</b>\n"
+        f"{t('profile_joined',lang)}: <b>{joined}</b>"
     )
 
     await cb.message.edit_text(
@@ -234,20 +234,22 @@ async def user_profile(cb: CallbackQuery, db_user: User = None):
     )
 
 @router.callback_query(F.data == "user_verify_phone")
-async def verify_phone_start(cb: CallbackQuery, state: FSMContext):
+async def verify_phone_start(cb: CallbackQuery, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     await state.set_state(UserState.verify_phone)
     await cb.message.answer(
         "📱 لطفاً شماره خود را ارسال کنید:",
         reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="📱 ارسال شماره", request_contact=True)]],
+            keyboard=[[KeyboardButton(text=t("btn_send_phone",lang), request_contact=True)]],
             resize_keyboard=True, one_time_keyboard=True
         )
     )
 
 
 @router.message(UserState.verify_phone, F.contact)
-async def verify_phone_contact(msg: Message, state: FSMContext):
+async def verify_phone_contact(msg: Message, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     phone = msg.contact.phone_number
     async with AsyncSessionLocal() as session:
         await set_phone(session, msg.from_user.id, phone)
@@ -261,15 +263,16 @@ async def verify_phone_contact(msg: Message, state: FSMContext):
 
 # ── Wallet ────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_wallet")
-async def user_wallet(cb: CallbackQuery, db_user: User = None):
+async def user_wallet(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     bal = float(db_user.balance or 0) if db_user else 0
     await cb.message.edit_text(
-        f"💰 <b>کیف پول</b>\n\n💵 موجودی: <b>${bal:.2f}</b>",
+        f"{t('wallet_title',lang)}\n\n{t('balance_label',lang)}: <b>${bal:.2f}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💰 افزایش موجودی",    callback_data="user_deposit")],
-            [InlineKeyboardButton(text="📋 تاریخچه تراکنش",  callback_data="user_transactions")],
-            [InlineKeyboardButton(text="🏠 بازگشت",          callback_data="user_home")],
+            [InlineKeyboardButton(text=t("btn_top_up",lang), callback_data="user_deposit")],
+            [InlineKeyboardButton(text=t("btn_tx_history",lang), callback_data="user_transactions")],
+            [InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')],
         ]),
         parse_mode="HTML"
     )
@@ -277,15 +280,16 @@ async def user_wallet(cb: CallbackQuery, db_user: User = None):
 
 # ── Deposit ───────────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_deposit")
-async def user_deposit_start(cb: CallbackQuery):
+async def user_deposit_start(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     async with AsyncSessionLocal() as session:
         coins = await get_active_coins(session)
     if not coins:
         await cb.message.edit_text(
-            "⚠️ <b>هیچ روش پرداختی فعال نیست.</b>\n\nلطفاً با پشتیبانی تماس بگیرید.",
+            t("deposit_no_method", lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
+                [InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_wallet')]
             ]),
             parse_mode="HTML"
         ); return
@@ -293,25 +297,24 @@ async def user_deposit_start(cb: CallbackQuery):
         text=f"{c['icon']} {c['label']}",
         callback_data=f"dep_coin_{c['key']}"
     )] for c in coins]
-    btns.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")])
+    btns.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_wallet')])
     await cb.message.edit_text(
-        "💳 <b>واریز موجودی</b>\n\n"
-        "ارز مورد نظر را انتخاب کنید:\n\n"
-        "<i>💡 مبلغ به دلار وارد می‌شود — معادل ارز به‌صورت لحظه‌ای محاسبه می‌شود.</i>",
+        t("deposit_choose_coin", lang),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
         parse_mode="HTML"
     )
 
 
 @router.callback_query(F.data.startswith("dep_coin_"))
-async def user_deposit_coin(cb: CallbackQuery, state: FSMContext):
+async def user_deposit_coin(cb: CallbackQuery, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     coin_key = cb.data.replace("dep_coin_", "")
     await cb.answer()
     async with AsyncSessionLocal() as session:
         coins = await get_active_coins(session)
     coin = next((c for c in coins if c["key"] == coin_key), None)
     if not coin:
-        await cb.answer("❌ این ارز دیگر فعال نیست.", show_alert=True); return
+        await cb.answer(t("deposit_coin_inactive", lang), show_alert=True); return
     await state.update_data(deposit_coin=coin)
     await state.set_state(UserState.deposit_amount)
     await cb.message.edit_text(
@@ -326,28 +329,30 @@ async def user_deposit_coin(cb: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "dep_cancel")
-async def dep_cancel(cb: CallbackQuery, state: FSMContext):
+async def dep_cancel(cb: CallbackQuery, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await state.clear()
     await cb.answer()
     await cb.message.edit_text(
-        "❌ واریز لغو شد.",
+        t("deposit_cancelled", lang),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 واریز مجدد", callback_data="user_deposit")],
-            [InlineKeyboardButton(text="🏠 بازگشت",     callback_data="user_wallet")],
+            [InlineKeyboardButton(text=t("btn_deposit_again",lang), callback_data="user_deposit")],
+            [InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_wallet')],
         ])
     )
 
 
 @router.message(UserState.deposit_amount)
-async def user_deposit_amount(msg: Message, state: FSMContext):
+async def user_deposit_amount(msg: Message, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     try:
         amount = float((msg.text or "").strip().replace(",", ""))
         if amount <= 0: raise ValueError
     except ValueError:
         await msg.answer(
-            "❌ مبلغ معتبر وارد کنید (مثال: 10 یا 25.5)",
+            t("deposit_invalid_amount", lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
+                [InlineKeyboardButton(text=t("btn_cancel_deposit",lang), callback_data="dep_cancel")]
             ])
         ); return
 
@@ -360,7 +365,7 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         coin_amount = await usd_to_coin(amount, coin_key)
         if coin_amount is None:
             await msg.answer(
-                "⚠️ خطا در دریافت قیمت. لطفاً دوباره امتحان کنید.",
+                t("deposit_price_error", lang),
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
                 ])
@@ -377,23 +382,24 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
         await state.update_data(deposit_amount=amount, deposit_coin_amount=coin_str, deposit_hash_tries=0)
         await state.set_state(UserState.deposit_hash)
 
+        _sep = "━" * 28
         await msg.answer(
             f"{icon} <b>واریز {label}</b>\n"
-            f"{'━'*28}\n"
+            f"{_sep}\n"
             f"💵 مبلغ پرداختی:  <b>${amount:,.2f}</b>\n"
             f"📊 قیمت لحظه‌ای:  <b>{price_str}</b>\n"
             f"🌐 شبکه:          <b>{network}</b>\n"
-            f"{'━'*28}\n\n"
+            f"{_sep}\n\n"
             f"💰 <b>مبلغ ارسالی:</b>\n"
             f"<code>{coin_str} {sym}</code>\n\n"
             f"📤 <b>آدرس کیف پول:</b>\n"
             f"<code>{addr}</code>\n\n"
             f"<i>👆 روی مبلغ یا آدرس ضربه بزنید تا کپی شود</i>\n\n"
-            f"{'━'*28}\n"
+            f"{_sep}\n"
             f"✅ پس از واریز روی دکمه زیر بزنید و لینک هش تراکنش را ارسال کنید.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ واریز کردم — ارسال لینک هش", callback_data="dep_send_hash")],
-                [InlineKeyboardButton(text="❌ لغو واریز",                   callback_data="dep_cancel")],
+                [InlineKeyboardButton(text=t("btn_send_hash",lang), callback_data="dep_send_hash")],
+                [InlineKeyboardButton(text=t("btn_cancel_deposit",lang), callback_data="dep_cancel")],
             ]),
             parse_mode="HTML"
         )
@@ -409,7 +415,8 @@ async def user_deposit_amount(msg: Message, state: FSMContext):
 
 
 @router.callback_query(F.data == "dep_send_hash")
-async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
+async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     await state.set_state(UserState.deposit_hash)
     try:
@@ -423,15 +430,16 @@ async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
         amount   = data.get("deposit_amount", 0)
         tries    = data.get("deposit_hash_tries", 0)
         warn     = f"\n\n⚠️ <b>تلاش {tries}/3</b> — لینک صحیح را ارسال کنید." if tries > 0 else ""
+        _sep = "━" * 28
         await cb.message.edit_text(
             f"{icon} <b>واریز {label}</b>\n"
-            f"{'━'*28}\n"
+            f"{_sep}\n"
             f"💵 مبلغ: <b>${amount:,.2f}</b>\n\n"
             f"💰 <b>مبلغ ارسالی:</b>\n"
             f"<code>{coin_str} {sym}</code>\n\n"
             f"📤 <b>آدرس کیف پول:</b>\n"
             f"<code>{addr}</code>\n\n"
-            f"{'━'*28}\n"
+            f"{_sep}\n"
             f"🔗 <b>لینک هش تراکنش را ارسال کنید:</b>\n"
             f"<i>مثال: https://tronscan.org/#/transaction/abc...</i>"
             f"{warn}",
@@ -451,12 +459,13 @@ async def dep_send_hash_prompt(cb: CallbackQuery, state: FSMContext):
 
 
 @router.message(UserState.deposit_hash)
-async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None):
+async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     try:
         tx_link = (msg.text or "").strip()
         if not tx_link:
             await msg.answer(
-                "❌ لینک هش تراکنش نمی‌تواند خالی باشد.",
+                t("deposit_hash_empty", lang),
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ لغو واریز", callback_data="dep_cancel")]
                 ])
@@ -472,7 +481,7 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         sym      = method.split()[0] if method else ""
         tries    = data.get("deposit_hash_tries", 0)
 
-        wait_msg = await msg.answer("🔍 <b>در حال بررسی تراکنش...</b>", parse_mode="HTML")
+        wait_msg = await msg.answer(t("deposit_checking", lang), parse_mode="HTML")
 
         from services.tx_verifier import verify_tx
         result = await verify_tx(tx_link, coin_key, addr, amount)
@@ -481,14 +490,15 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         if not result.is_real_token:
             await wait_msg.delete()
             await state.clear()
+            _sep = "━" * 28
             await msg.answer(
                 f"🚫 <b>واریز رد شد — توکن جعلی!</b>\n"
-                f"{'━'*28}\n"
+                f"{_sep}\n"
                 f"❌ {result.error}\n\n"
                 f"این تراکنش با توکن جعلی انجام شده و قابل قبول نیست.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📞 پشتیبانی", callback_data="user_support")],
-                    [InlineKeyboardButton(text="🏠 بازگشت",   callback_data="user_home")],
+                    [InlineKeyboardButton(text=t("btn_support",lang), callback_data="user_support")],
+                    [InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')],
                 ]),
                 parse_mode="HTML"
             ); return
@@ -509,15 +519,16 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
             await wait_msg.delete()
             new_tries = tries + 1
             await state.update_data(deposit_hash_tries=new_tries)
+            _sep = "━" * 28
             await msg.answer(
                 f"⚠️ <b>بررسی بات: {bot_status}</b>\n"
-                f"{'━'*28}\n"
+                f"{_sep}\n"
                 f"📋 {bot_note}\n\n"
                 f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n\n"
-                f"{'━'*28}\n"
+                f"{_sep}\n"
                 f"تلاش <b>{new_tries}/3</b> — لینک صحیح را ارسال کنید یا واریز را لغو کنید.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔄 ارسال مجدد لینک هش", callback_data="dep_send_hash")],
+                    [InlineKeyboardButton(text=t("btn_resend_hash",lang), callback_data="dep_send_hash")],
                     [InlineKeyboardButton(text="❌ لغو واریز",           callback_data="dep_cancel")],
                 ]),
                 parse_mode="HTML",
@@ -538,19 +549,20 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
         await state.clear()
         await wait_msg.delete()
 
+        _sep = "━" * 28
         await msg.answer(
             f"{'✅' if result.ok else '⚠️'} <b>درخواست واریز ثبت شد!</b>\n"
-            f"{'━'*28}\n"
+            f"{_sep}\n"
             f"💵 مبلغ:    <b>${amount:,.2f}</b>\n"
             f"💰 ارسالی: <b>{coin_str} {sym}</b>\n"
             f"🔗 <a href=\"{result.explorer_url}\">مشاهده تراکنش</a>\n"
-            f"{'━'*28}\n\n"
+            f"{_sep}\n\n"
             f"🤖 <b>بررسی بات:</b> {bot_status}\n"
             f"📋 {bot_note}\n\n"
-            f"{'━'*28}\n"
-            f"⏳ منتظر تایید نهایی ادمین باشید.",
+            f"{_sep}\n"
+            ft("deposit_await_admin", lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 بازگشت به خانه", callback_data="user_home")]
+                [InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')]
             ]),
             parse_mode="HTML",
             disable_web_page_preview=True
@@ -567,15 +579,16 @@ async def user_deposit_hash(msg: Message, state: FSMContext, db_user: User = Non
 
 # ── Transactions ──────────────────────────────────────────────────────────────
 @router.callback_query(F.data == "user_transactions")
-async def user_transactions(cb: CallbackQuery, db_user: User = None):
+async def user_transactions(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     async with AsyncSessionLocal() as session:
         txs = await get_user_transactions(session, db_user.id)
     if not txs:
         await cb.message.edit_text(
-            "📋 تاریخچه تراکنش خالی است.",
+            t("tx_empty", lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
+                [InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_wallet')]
             ])
         ); return
     TYPE_FA = {"deposit":"واریز","order":"سفارش","refund":"برگشت","manual":"دستی"}
@@ -589,9 +602,9 @@ async def user_transactions(cb: CallbackQuery, db_user: User = None):
             f"   📅 {tx.created_at.strftime('%Y-%m-%d %H:%M')}"
         )
     await cb.message.edit_text(
-        "📋 <b>تراکنش‌های من</b>\n\n" + "\n\n".join(rows),
+        t("tx_title", lang) + "\n\n" + "\n\n".join(rows),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_wallet")]
+            [InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_wallet')]
         ]),
         parse_mode="HTML"
     )
@@ -604,12 +617,12 @@ _ARCH_ST  = {'completed', 'cancelled', 'rejected'}
 _ARCH_H   = 24
 _ARCH_MAX = 30
 _ST_MAP   = {
-    'pending':    ('⏳', 'در صف'),
-    'processing': ('🔄', 'در حال انجام'),
-    'completed':  ('✅', 'تکمیل'),
-    'partial':    ('⚠️', 'ناقص'),
-    'rejected':   ('❌', 'رد'),
-    'cancelled':  ('❌', 'کنسل'),
+    'pending':    ('⏳', 'st_pending'),
+    'processing': ('🔄', 'st_processing'),
+    'completed':  ('✅', 'st_completed'),
+    'partial':    ('⚠️', 'st_partial'),
+    'rejected':   ('❌', 'st_rejected'),
+    'cancelled':  ('❌', 'st_cancelled'),
 }
 
 
@@ -625,7 +638,8 @@ def _archived(o) -> bool:
 
 
 @router.callback_query(F.data == 'user_orders')
-async def user_orders(cb: CallbackQuery, db_user: User = None):
+async def user_orders(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     from collections import defaultdict
     from services.panel_service import get_user_panel_orders
@@ -638,11 +652,11 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
     buttons = []
     if not smm_act and not panel_act:
         await cb.message.edit_text(
-            '📦 سفارش فعالی وجود ندارد.',
+            t('orders_empty', lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='user_new_order_select')],
                 [InlineKeyboardButton(text='📜 تاریخچه',        callback_data='user_orders_history')],
-                [InlineKeyboardButton(text='🏠 بازگشت',            callback_data='user_home')],
+                [InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')],
             ])
         )
         return
@@ -664,22 +678,22 @@ async def user_orders(cb: CallbackQuery, db_user: User = None):
         h = _hl2.md5(pname.encode()).hexdigest()[:10]
         _uord_hmap[h] = pname
         buttons.append([InlineKeyboardButton(
-            text=f'🤖 {pname}  ({len(ords)} سفارش)',
+            text=f'🤖 {pname}  ({t("orders_count",lang).format(n=len(ords))})',
             callback_data=f'uord_smm_{h}'
         )])
     for pname, ords in panel_grp.items():
         pid_val = getattr(ords[0], 'panel_id', 0) or 0
         buttons.append([InlineKeyboardButton(
-            text=f'🎛 {pname}  ({len(ords)} سفارش)',
+            text=f'🎛 {pname}  ({t("orders_count",lang).format(n=len(ords))})',
             callback_data=f'uord_man_{pid_val}'
         )])
     buttons.append([
-        InlineKeyboardButton(text='🛒 سفارش جدید', callback_data='user_new_order_select'),
-        InlineKeyboardButton(text='📜 تاریخچه',    callback_data='user_orders_history'),
+        InlineKeyboardButton(text=t('btn_new_order',lang), callback_data='user_new_order_select'),
+        InlineKeyboardButton(text=t('btn_archive',lang), callback_data='user_orders_history'),
     ])
-    buttons.append([InlineKeyboardButton(text='🏠 بازگشت', callback_data='user_home')])
+    buttons.append([InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')])
     await cb.message.edit_text(
-        '📦 <b>سفارش‌های فعال</b>\n\nیک پنل را انتخاب کنید:',
+        t('orders_active', lang),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode='HTML'
     )
@@ -689,7 +703,8 @@ _uord_hmap: dict = {}
 
 
 @router.callback_query(F.data.startswith('uord_smm_'))
-async def uord_smm_panel(cb: CallbackQuery, db_user: User = None):
+async def uord_smm_panel(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     h = cb.data[len('uord_smm_'):]
     async with AsyncSessionLocal() as session:
@@ -709,7 +724,7 @@ async def uord_smm_panel(cb: CallbackQuery, db_user: User = None):
                 text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}',
                 callback_data=f'user_order_{o.id}'
             )])
-    buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    buttons.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_orders')])
     await cb.message.edit_text(
         f'🤖 <b>{pname}</b> — سفارش‌های فعال',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -718,7 +733,8 @@ async def uord_smm_panel(cb: CallbackQuery, db_user: User = None):
 
 
 @router.callback_query(F.data.startswith('uord_man_'))
-async def uord_man_panel(cb: CallbackQuery, db_user: User = None):
+async def uord_man_panel(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     from services.panel_service import get_user_panel_orders, get_all_panels
     try:
@@ -742,7 +758,7 @@ async def uord_man_panel(cb: CallbackQuery, db_user: User = None):
                 text=f'{ic} #{o.id}  {(o.service_name or "")[:22]}',
                 callback_data=f'user_panel_order_{o.id}'
             )])
-    buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    buttons.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_orders')])
     await cb.message.edit_text(
         f'🎛 <b>{pname}</b> — سفارش‌های فعال',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
@@ -755,7 +771,8 @@ async def uord_man_panel(cb: CallbackQuery, db_user: User = None):
 
 
 @router.callback_query(F.data == 'user_new_order_select')
-async def user_new_order_select(cb: CallbackQuery, db_user: User = None):
+async def user_new_order_select(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     from services.panel_service import get_all_panels
     from services.settings_service import get_setting
@@ -771,20 +788,22 @@ async def user_new_order_select(cb: CallbackQuery, db_user: User = None):
             text=f'🎛 {p.name}',
             callback_data=f'panel_user_{p.id}'
         )])
-    rows.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    rows.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_orders')])
     await cb.message.edit_text(
-        '🛒 <b>سفارش جدید</b>\n\nیک پنل را انتخاب کنید:',
+        t('new_order_choose', lang),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode='HTML'
     )
 @router.callback_query(F.data == 'user_orders_history')
-async def user_orders_history(cb: CallbackQuery, db_user: User = None):
+async def user_orders_history(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     await _render_history(cb, db_user, 0)
 
 
 @router.callback_query(F.data.startswith('uord_hist_'))
-async def uord_hist_page(cb: CallbackQuery, db_user: User = None):
+async def uord_hist_page(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     try:
         page = int(cb.data[len('uord_hist_'):])
@@ -793,7 +812,8 @@ async def uord_hist_page(cb: CallbackQuery, db_user: User = None):
     await _render_history(cb, db_user, page)
 
 
-async def _render_history(cb: CallbackQuery, db_user: User, page: int):
+async def _render_history(cb: CallbackQuery, db_user: User, page: int, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     from services.panel_service import get_user_panel_orders, get_all_panels
     from datetime import datetime as _dt2
     _HPAGE = 8
@@ -819,9 +839,9 @@ async def _render_history(cb: CallbackQuery, db_user: User, page: int):
     combined = combined[:_ARCH_MAX]
     if not combined:
         await cb.message.edit_text(
-            '📜 تاریخچه خالی است.',
+            t('history_empty', lang),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')]
+                [InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_orders')]
             ])
         )
         return
@@ -846,9 +866,9 @@ async def _render_history(cb: CallbackQuery, db_user: User, page: int):
         nav.append(InlineKeyboardButton(text='▶️', callback_data=f'uord_hist_{page+1}'))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton(text='🔙 بازگشت', callback_data='user_orders')])
+    buttons.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_orders')])
     await cb.message.edit_text(
-        f'📜 <b>تاریخچه سفارشات</b>  —  صفحه {page+1}/{total}\n'
+        f"{t('history_title',lang)}  —  {t('history_page',lang).format(page=page+1)}/{total}\n"
         f'<i>تکمیل / رد / کنسل شده بعد از ۲۴ ساعت</i>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode='HTML'
@@ -856,7 +876,8 @@ async def _render_history(cb: CallbackQuery, db_user: User, page: int):
 
 
 @router.callback_query(F.data.startswith('user_panel_order_'))
-async def user_panel_order_detail(cb: CallbackQuery, db_user: User = None):
+async def user_panel_order_detail(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     from html import escape
     from services.panel_service import get_panel_order
@@ -883,21 +904,22 @@ async def user_panel_order_detail(cb: CallbackQuery, db_user: User = None):
     if order.completed_qty is not None and order.status == 'partial':
         text += f'✅ انجام شده: <b>{order.completed_qty:,}</b>\n'
     if order.refund_amount and float(order.refund_amount) > 0:
-        text += f'↩️ بازگشت: <b>${float(order.refund_amount):.4f}</b>\n'
+        text += f'{t("order_refund",lang)}: <b>${float(order.refund_amount):.4f}</b>\n'
     if order.admin_note:
         text += f'📝 {escape(order.admin_note)}\n'
     back = 'user_orders_history' if _archived(order) else 'user_orders'
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='🔙 بازگشت', callback_data=back)]
+            [InlineKeyboardButton(text=t('btn_back',lang), callback_data=back)]
         ]),
         parse_mode='HTML'
     )
 
 
 @router.callback_query(F.data.startswith('user_order_'))
-async def user_order_detail(cb: CallbackQuery, db_user: User = None):
+async def user_order_detail(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     from html import escape
     try:
@@ -957,7 +979,7 @@ async def user_order_detail(cb: CallbackQuery, db_user: User = None):
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text='🔄 بروزرسانی', callback_data=f'user_order_{order_id}')],
-            [InlineKeyboardButton(text='🔙 بازگشت',    callback_data=back)],
+            [InlineKeyboardButton(text=t('btn_back',lang), callback_data=back)],
         ]),
         parse_mode='HTML'
     )
@@ -1065,7 +1087,8 @@ def _support_url_btn(support_url: str) -> list:
 
 
 @router.callback_query(F.data == "user_support")
-async def user_support(cb: CallbackQuery):
+async def user_support(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     async with AsyncSessionLocal() as session:
         support_url  = await get_setting(session, "support_url", "")
@@ -1074,33 +1097,31 @@ async def user_support(cb: CallbackQuery):
     rows = []
     if help_enabled == "1":
         rows.append([
-            InlineKeyboardButton(text="💳 شارژ کیف پول",  callback_data="help_topic_wallet"),
-            InlineKeyboardButton(text="🛒 ثبت سفارش",      callback_data="help_topic_order"),
+            InlineKeyboardButton(text=t("help_wallet",lang), callback_data="help_topic_wallet"),
+            InlineKeyboardButton(text=t("help_order",lang), callback_data="help_topic_order"),
         ])
         rows.append([
-            InlineKeyboardButton(text="📦 پیگیری سفارش",  callback_data="help_topic_track"),
-            InlineKeyboardButton(text="⚠️ نکات مهم",       callback_data="help_topic_notes"),
+            InlineKeyboardButton(text=t("help_track",lang), callback_data="help_topic_track"),
+            InlineKeyboardButton(text=t("help_notes",lang), callback_data="help_topic_notes"),
         ])
         rows.append([
-            InlineKeyboardButton(text="📖 راهنمای کامل",  callback_data="help_topic_full"),
+            InlineKeyboardButton(text=t("help_full",lang), callback_data="help_topic_full"),
         ])
         rows.append([InlineKeyboardButton(text="─────────────────", callback_data="noop")])
 
     sup_btn = _support_url_btn(support_url)
     if sup_btn:
         rows.append(sup_btn)
-    rows.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
+    rows.append([InlineKeyboardButton(text=t('btn_home',lang), callback_data='user_home')])
 
     if help_enabled == "1":
         txt = (
-            "📞 <b>پشتیبانی و راهنما</b>\n\n"
-            "برای مشاهده راهنما یک موضوع را انتخاب کنید 👇\n"
-            "یا مستقیماً با پشتیبانی در ارتباط باشید."
+            t("support_title", lang) + "\n\n" + t("support_text", lang)
         )
     elif sup_btn:
-        txt = "📞 <b>پشتیبانی</b>\n\nبرای ارتباط با تیم پشتیبانی کلیک کنید 👇"
+        txt = t("support_only", lang)
     else:
-        txt = "📞 <b>پشتیبانی</b>\n\n⚠️ در حال حاضر پشتیبانی آنلاین در دسترس نیست."
+        txt = t("support_unavailable", lang)
 
     await cb.message.edit_text(
         txt,
@@ -1110,7 +1131,8 @@ async def user_support(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.in_(set(_HELP_TOPICS.keys())))
-async def help_topic(cb: CallbackQuery):
+async def help_topic(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     _CB_TO_DB = {
         "help_topic_wallet": "help_text_wallet",
@@ -1128,7 +1150,7 @@ async def help_topic(cb: CallbackQuery):
     if sup_btn:
         rows.append(sup_btn)
     rows.append([InlineKeyboardButton(text="❓ هنوز مشکل دارم", callback_data="help_still_problem")])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت",          callback_data="user_support")])
+    rows.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_support')])
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1136,7 +1158,8 @@ async def help_topic(cb: CallbackQuery):
     )
 
 @router.callback_query(F.data == "help_topic_full")
-async def help_topic_full(cb: CallbackQuery):
+async def help_topic_full(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     async with AsyncSessionLocal() as session:
         support_url = await get_setting(session, "support_url", "")
@@ -1147,7 +1170,7 @@ async def help_topic_full(cb: CallbackQuery):
     if sup_btn:
         rows.append(sup_btn)
     rows.append([InlineKeyboardButton(text="❓ هنوز مشکل دارم", callback_data="help_still_problem")])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت",          callback_data="user_support")])
+    rows.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_support')])
     await cb.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1156,7 +1179,8 @@ async def help_topic_full(cb: CallbackQuery):
 
 
 @router.callback_query(F.data == "help_still_problem")
-async def help_still_problem(cb: CallbackQuery):
+async def help_still_problem(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     async with AsyncSessionLocal() as session:
         support_url = await get_setting(session, "support_url", "")
@@ -1166,7 +1190,7 @@ async def help_still_problem(cb: CallbackQuery):
         rows.append(sup_btn)
     else:
         rows.append([InlineKeyboardButton(text="⚠️ پشتیبانی در دسترس نیست", callback_data="noop")])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_support")])
+    rows.append([InlineKeyboardButton(text=t('btn_back',lang), callback_data='user_support')])
     await cb.message.edit_text(
         "❓ <b>هنوز مشکل دارید؟</b>\n\n"
         "تیم پشتیبانی آماده کمک به شماست.\n"
