@@ -1,117 +1,59 @@
-"""
-Notification service
-"""
-from __future__ import annotations
+"""Notification Service — i18n v5.1"""
 import logging
+from aiogram import Bot
+from i18n import t, status_label
 
-logger = logging.getLogger("notif")
+logger = logging.getLogger("notification")
+SEP = "━" * 24
 
-STATUS_ICONS = {
-    "pending":    "⏳",
-    "processing": "🔄",
-    "completed":  "✅",
-    "partial":    "⚠️",
-    "rejected":   "❌",
-}
-STATUS_FA = {
-    "pending":    "در صف",
-    "processing": "در حال انجام",
-    "completed":  "تکمیل شد",
-    "partial":    "تکمیل جزئی",
-    "rejected":   "رد شد",
-}
-
-
-async def notify_user(bot, telegram_id: int, text: str):
+async def _send(bot: Bot, tg_id: int, text: str) -> bool:
     try:
-        await bot.send_message(telegram_id, text, parse_mode="HTML")
+        await bot.send_message(tg_id, text, parse_mode="HTML")
+        return True
     except Exception as e:
-        logger.warning(f"notify_user {telegram_id}: {e}")
+        logger.warning(f"notify {tg_id}: {e}")
+        return False
 
+async def notify_order_placed(bot, tg_id, order_id, panel_name, cat_name, service_name, quantity, amount, balance, lang="en"):
+    return await _send(bot, tg_id, t("notif_order_placed", lang, oid=order_id, sep=SEP, panel=panel_name, cat=cat_name, svc=service_name[:40], qty=quantity, amt=amount, bal=balance))
 
-async def notify_order_confirmed(
-    bot, telegram_id: int,
-    order_id: int, panel_name: str, cat_name: str, service_name: str,
-    quantity: int, amount: float, balance: float,
-):
-    """ثبت سفارش + کسر موجودی در یک پیام"""
-    sep = "━" * 24
-    await notify_user(bot, telegram_id,
-        f"⏳ <b>سفارش #{order_id} ثبت شد</b>\n"
-        f"{sep}\n"
-        f"🏷 پنل: <b>{panel_name}</b>\n"
-        f"📂 دسته: <b>{cat_name}</b>\n"
-        f"📌 خدمت: <b>{service_name[:40]}</b>\n"
-        f"🔢 تعداد: <b>{quantity:,}</b>\n"
-        f"💸 پرداخت: <b>${amount:.4f}</b>  |  💳 موجودی: <b>${balance:.2f}</b>"
-    )
+async def notify_order_status(bot, tg_id, order_id, status, service_name, completed_qty=0, refund=0.0, admin_note="", lang="en"):
+    icon = {"pending":"⏳","processing":"🔄","in progress":"🔄","completed":"✅","partial":"⚠️","cancelled":"❌","failed":"💔","refunded":"↩️","rejected":"❌"}.get(status.lower(),"📌")
+    text = t("notif_status_update", lang, icon=icon, oid=order_id, status=status_label(status, lang), sep=SEP, svc=service_name[:40])
+    if completed_qty: text += f"\n{t('order_qty_done', lang)}: <b>{completed_qty:,}</b>"
+    if refund:        text += f"\n{t('order_refund', lang)}: <b>${refund:.4f}</b>"
+    if admin_note:    text += f"\n{t('order_admin_note', lang)}: {admin_note}"
+    return await _send(bot, tg_id, text)
 
+async def notify_refund(bot, tg_id, order_id, amount, balance, reason="", lang="en"):
+    return await _send(bot, tg_id, t("notif_refund", lang, oid=order_id, sep=SEP, amt=amount, bal=balance, reason=reason))
 
-async def notify_order_status(
-    bot, telegram_id: int, order_id: int,
-    service_name: str, status: str,
-    quantity: int = 0, completed_qty: int = None,
-    refund: float = 0.0, admin_note: str = "",
-):
-    icon      = STATUS_ICONS.get(status, "📌")
-    status_fa = STATUS_FA.get(status, status)
-    sep = "━" * 24
-    text = (
-        f"{icon} <b>سفارش #{order_id} — {status_fa}</b>\n"
-        f"{sep}\n"
-        f"📌 {service_name[:40]}\n"
-    )
-    if completed_qty is not None and status == "partial":
-        text += f"✅ انجام شده: <b>{completed_qty:,}</b>\n"
-    if refund > 0:
-        text += f"↩️ بازگشت: <b>${refund:.4f}</b>\n"
-    if admin_note:
-        text += f"📝 {admin_note}\n"
-    await notify_user(bot, telegram_id, text)
+async def notify_deposit_approved(bot, tg_id, amount, balance, lang="en"):
+    return await _send(bot, tg_id, t("notif_deposit_ok", lang, sep=SEP, amt=amount, bal=balance))
 
+async def notify_deposit_rejected(bot, tg_id, amount, reason="", lang="en"):
+    r = f"\n📝 {reason}" if reason else ""
+    return await _send(bot, tg_id, t("notif_deposit_rej", lang, sep=SEP, amt=amount, reason=r))
 
-async def notify_refund(bot, telegram_id: int, amount: float,
-                         order_id: int, reason: str, balance: float):
-    sep = "━" * 24
-    await notify_user(bot, telegram_id,
-        f"↩️ <b>بازگشت وجه — سفارش #{order_id}</b>\n"
-        f"{sep}\n"
-        f"💰 <b>${amount:.4f}</b>  |  💳 موجودی: <b>${balance:.2f}</b>\n"
-        f"📌 {reason}"
-    )
+async def notify_manual_charge(bot, tg_id, amount, balance, lang="en"):
+    return await _send(bot, tg_id, t("notif_manual_charge", lang, sep=SEP, amt=amount, bal=balance))
 
-
-async def notify_deposit_approved(bot, telegram_id: int, amount: float,
-                                   method: str = "", balance: float = 0.0):
-    sep = "━" * 24
-    await notify_user(bot, telegram_id,
-        f"✅ <b>شارژ تایید شد</b>\n"
-        f"{sep}\n"
-        f"💰 <b>${amount:.2f}</b>  |  💳 موجودی: <b>${balance:.2f}</b>"
-    )
-
-
-async def notify_deposit_rejected(bot, telegram_id: int, amount: float, reason: str = ""):
-    sep = "━" * 24
-    await notify_user(bot, telegram_id,
-        f"❌ <b>شارژ رد شد</b>\n"
-        f"{sep}\n"
-        f"💰 <b>${amount:.2f}</b>"
-        + (f"\n📝 {reason}" if reason else "")
-    )
-
-
-async def notify_manual_credit(bot, telegram_id: int, amount: float,
-                                by_admin: str, balance: float):
-    sep = "━" * 24
-    await notify_user(bot, telegram_id,
-        f"🎁 <b>شارژ دستی</b>\n"
-        f"{sep}\n"
-        f"💰 <b>${amount:.2f}</b>  |  💳 موجودی: <b>${balance:.2f}</b>"
-    )
-
-
-# backward compat — حذف شده
-async def notify_balance_deducted(bot, telegram_id: int, amount: float,
-                                   reason: str, balance: float):
-    pass
+async def notify_group_new_order(bot, order_id, panel, cat_name, svc_name, user, link, qty, amount, note=""):
+    from services.settings_service import get_setting
+    from db.database import AsyncSessionLocal
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    async with AsyncSessionLocal() as s:
+        gid_str = getattr(panel, "group_id", None) or await get_setting(s, f"panel_{panel.id}_group_id", "")
+    if not gid_str: return False
+    try: gid = int(gid_str)
+    except (ValueError, TypeError): return False
+    sep = "━" * 28
+    uname = f"@{user.username}" if user.username else str(user.telegram_id)
+    text = (f"🆕 <b>Order #{order_id}</b>\n{sep}\n" f"🏷 Panel: <b>{panel.name}</b>\n📂 Category: <b>{cat_name}</b>\n" f"📌 Service: <b>{svc_name[:50]}</b>\n{sep}\n" f"👤 <code>{user.telegram_id}</code> {uname}\n" f"🔗 <code>{link[:100]}</code>\n🔢 <b>{qty:,}</b>\n💰 <b>${amount:.4f}</b>\n" + (f"📝 <i>{note}</i>\n" if note else "") + f"{sep}\n⏳ <b>Pending</b>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Processing", callback_data=f"adm_grp_porder_{order_id}_{panel.id}_processing"), InlineKeyboardButton(text="✅ Complete", callback_data=f"adm_grp_porder_{order_id}_{panel.id}_completed")],[InlineKeyboardButton(text="⚠️ Partial", callback_data=f"adm_grp_porder_{order_id}_{panel.id}_partial"), InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_grp_porder_{order_id}_{panel.id}_rejected")]])
+    try:
+        await bot.send_message(gid, text, reply_markup=kb, parse_mode="HTML")
+        return True
+    except Exception as e:
+        logger.warning(f"group notify {gid}: {e}")
+        return False
