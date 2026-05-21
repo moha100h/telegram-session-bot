@@ -22,6 +22,7 @@ from services.order_service import (
     get_all_orders, get_order_by_id, update_order_status, process_refund,
     get_user_orders,
 )
+from i18n import LANGUAGES
 from services.settings_service import get_setting as gs, set_setting as ss, get_coins, save_coins
 
 logger   = logging.getLogger("admin")
@@ -89,6 +90,7 @@ def admin_menu_kb(uid: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="📢 همگانی",       callback_data="adm_broadcast")],
         [InlineKeyboardButton(text="📊 آمار",         callback_data="adm_stats"),
          InlineKeyboardButton(text="🔑 ادمین‌ها",     callback_data="adm_admins")],
+        [InlineKeyboardButton(text="🌐 زبان‌ها", callback_data="adm_languages")],
         [InlineKeyboardButton(text="🗄 بکاپ",         callback_data="adm_backup"),
          InlineKeyboardButton(text="📖 راهنما",       callback_data="adm_help")],
         [InlineKeyboardButton(text="🏠 پنل کاربری",  callback_data="user_home")],
@@ -2683,3 +2685,95 @@ async def adm_cancel_handler(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
+
+
+# ═══════════════════════════════════════════════════════════════
+#  LANGUAGE MANAGEMENT
+# ═══════════════════════════════════════════════════════════════
+
+def _build_lang_keyboard(active_langs: list, default_lang: str) -> InlineKeyboardMarkup:
+    rows = []
+    for code, label in LANGUAGES.items():
+        rows.append([
+            InlineKeyboardButton(text=("✅ " if code in active_langs else "❌ ") + label + (" ⭐" if code == default_lang else ""), callback_data=f"adm_lang_toggle_{code}"),
+            InlineKeyboardButton(text="⭐ پیش‌فرض" + (" ✓" if code == default_lang else ""), callback_data=f"adm_lang_default_{code}"),
+        ])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _get_lang_settings(session) -> tuple:
+    active_raw   = await gs(session, "active_languages", "en,fa,ar,he,ru")
+    default_lang = await gs(session, "default_language",  "fa")
+    active = [x.strip() for x in active_raw.split(",") if x.strip() in LANGUAGES]
+    if not active: active = list(LANGUAGES.keys())
+    return active, default_lang
+
+
+async def _save_lang_settings(session, active_langs: list, default_lang: str):
+    await ss(session, "active_languages", ",".join(active_langs))
+    await ss(session, "default_language", default_lang)
+    await session.commit()
+
+
+def _lang_page_text(active: list, default_lang: str) -> str:
+    sep = "━" * 28
+    return (f"🌐 <b>مدیریت زبان‌ها</b>\n{sep}\n\n"
+            f"📊 فعال: <b>{len(active)}</b> از <b>{len(LANGUAGES)}</b>\n"
+            f"⭐ پیش‌فرض: <b>{LANGUAGES.get(default_lang, default_lang)}</b>\n\n"
+            f"<i>💡 ✅/❌ = فعال/غیرفعال  |  ⭐ = تنظیم پیش‌فرض</i>")
+
+
+@router.callback_query(F.data == "adm_languages")
+async def adm_languages(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    await cb.answer()
+    async with AsyncSessionLocal() as s:
+        active, default_lang = await _get_lang_settings(s)
+    await cb.message.edit_text(_lang_page_text(active, default_lang),
+        reply_markup=_build_lang_keyboard(active, default_lang), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_lang_toggle_"))
+async def adm_lang_toggle(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    code = cb.data.replace("adm_lang_toggle_", "")
+    if code not in LANGUAGES:
+        await cb.answer("❌ زبان نامعتبر", show_alert=True); return
+    async with AsyncSessionLocal() as s:
+        active, default_lang = await _get_lang_settings(s)
+        if code in active:
+            if len(active) <= 1:
+                await cb.answer("⚠️ حداقل یک زبان باید فعال باشد!", show_alert=True); return
+            active.remove(code)
+            if default_lang == code: default_lang = active[0]
+            msg_txt = f"❌ {LANGUAGES[code]} غیرفعال شد"
+        else:
+            active.append(code)
+            msg_txt = f"✅ {LANGUAGES[code]} فعال شد"
+        await _save_lang_settings(s, active, default_lang)
+    await cb.answer(msg_txt)
+    try:
+        await cb.message.edit_text(_lang_page_text(active, default_lang),
+            reply_markup=_build_lang_keyboard(active, default_lang), parse_mode="HTML")
+    except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_lang_default_"))
+async def adm_lang_set_default(cb: CallbackQuery):
+    if not await _is_admin(cb.from_user.id, "settings"):
+        await cb.answer("⛔️", show_alert=True); return
+    code = cb.data.replace("adm_lang_default_", "")
+    if code not in LANGUAGES:
+        await cb.answer("❌ زبان نامعتبر", show_alert=True); return
+    async with AsyncSessionLocal() as s:
+        active, _ = await _get_lang_settings(s)
+        if code not in active: active.append(code)
+        await _save_lang_settings(s, active, code)
+    await cb.answer(f"⭐ {LANGUAGES[code]} به عنوان پیش‌فرض تنظیم شد", show_alert=True)
+    try:
+        await cb.message.edit_text(_lang_page_text(active, code),
+            reply_markup=_build_lang_keyboard(active, code), parse_mode="HTML")
+    except Exception: pass
