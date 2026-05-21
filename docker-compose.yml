@@ -15,6 +15,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   redis:
     image: redis:7-alpine
     container_name: tsb_redis
@@ -27,6 +28,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
   bot:
     build:
       context: ./bot
@@ -49,6 +51,31 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  miniapp_api:
+    build:
+      context: ./miniapp/api
+      dockerfile: Dockerfile
+    container_name: tsb_miniapp_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  miniapp_web:
+    build:
+      context: ./miniapp
+      dockerfile: Dockerfile.nginx
+    container_name: tsb_miniapp_web
+    restart: unless-stopped
+    ports:
+      - "9012:80"
+    depends_on:
+      - miniapp_api
+
 volumes:
   postgres_data:
   redis_data:
