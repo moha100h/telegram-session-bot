@@ -14,6 +14,7 @@ from handlers.backup_handler       import router as backup_router
 from handlers.panel_admin_handler  import router as panel_admin_router
 from handlers.panel_user_handler   import router as panel_user_router
 from handlers.group_id_handler     import router as group_id_router
+from handlers.lang_handler       import router as lang_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger    = logging.getLogger("main")
@@ -45,6 +46,7 @@ async def main():
     dp.include_router(user_router)
     dp.include_router(admin_router)
     dp.include_router(smmpass_router)
+    dp.include_router(lang_router)
     await init_db()
     await set_commands(bot)
     try:

@@ -1,6 +1,7 @@
 """
 Panel User Handler
 """
+from i18n import t
 import logging
 from html import escape
 from aiogram import Router, F, Bot
@@ -21,8 +22,8 @@ class PanelUserState(StatesGroup):
     order_qty  = State()
     order_note = State()
 
-def _back(cb): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data=cb)]])
-def _cancel(cb="user_home"): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ لغو", callback_data=cb)]])
+def _back(cb, lang="en"): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("btn_back", lang), callback_data=cb)]])
+def _cancel(cb="user_home", lang="en"): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=cb)]])
 
 @router.callback_query(F.data == "noop")
 async def noop(cb: CallbackQuery): await cb.answer()
@@ -30,14 +31,15 @@ async def noop(cb: CallbackQuery): await cb.answer()
 
 # ── لیست دسته‌بندی‌های پنل ───────────────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data.regexp(r"^panel_user_\d+$"))
-async def panel_user_cats(cb: CallbackQuery):
+async def panel_user_cats(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     pid = int(cb.data.split("_")[-1])
     async with AsyncSessionLocal() as s:
         panel = await get_panel(s, pid)
         cats  = await get_categories(s, pid, active_only=True)
     if not panel or not panel.is_active:
-        await cb.message.edit_text("❌ این پنل در دسترس نیست.", reply_markup=_back("user_home")); return
+        await cb.message.edit_text(t("panel_unavailable", lang), reply_markup=_back("user_home")); return
     rows = [[InlineKeyboardButton(text=f"{c.icon} {escape(c.name)}", callback_data=f"panel_cat_{c.id}_{pid}")] for c in cats]
     rows.append([InlineKeyboardButton(text="🏠 بازگشت", callback_data="user_home")])
     desc = f"\n<i>{escape(panel.description)}</i>" if panel.description else ""
@@ -49,7 +51,8 @@ async def panel_user_cats(cb: CallbackQuery):
 
 # ── لیست خدمات دسته ───────────────────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data.regexp(r"^panel_cat_\d+_\d+$"))
-async def panel_user_svcs(cb: CallbackQuery):
+async def panel_user_svcs(cb: CallbackQuery, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     parts = cb.data.split("_"); cid, pid = int(parts[2]), int(parts[3])
     from db.models import PanelCategory
@@ -60,7 +63,7 @@ async def panel_user_svcs(cb: CallbackQuery):
     if not cat:
         await cb.message.edit_text("❌ دسته یافت نشد.", reply_markup=_back(f"panel_user_{pid}")); return
     rows = [[InlineKeyboardButton(text=f"📌 {escape(sv.name)} — ${sv.price:.2f}/واحد", callback_data=f"panel_svc_{sv.id}_{pid}")] for sv in svcs]
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"panel_user_{pid}")])
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=f"panel_user_{pid}")])
     await cb.message.edit_text(
         f"{cat.icon} <b>{escape(cat.name)}</b>\n{'━'*28}\n\nیک خدمت را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML"
@@ -69,7 +72,8 @@ async def panel_user_svcs(cb: CallbackQuery):
 
 # ── جزئیات خدمت ────────────────────────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data.regexp(r"^panel_svc_\d+_\d+$"))
-async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: User = None):
+async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: User = None, user_lang: str = "en"):
+    lang = getattr(db_user, "language", None) or user_lang or "en"
     await cb.answer()
     parts = cb.data.split("_"); sid, pid = int(parts[2]), int(parts[3])
     async with AsyncSessionLocal() as s:
@@ -87,7 +91,7 @@ async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: U
         f"💳 موجودی شما: <b>${bal:.2f}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🛒 سفارش دهید", callback_data=f"panel_order_start_{sid}_{pid}")],
-            [InlineKeyboardButton(text="🔙 بازگشت",      callback_data=f"panel_cat_{svc.category_id}_{pid}")],
+            [InlineKeyboardButton(text=t("btn_back", lang),      callback_data=f"panel_cat_{svc.category_id}_{pid}")],
         ]), parse_mode="HTML"
     )
 
@@ -170,7 +174,7 @@ async def panel_order_note(msg: Message, state: FSMContext, db_user: User = None
     rows = []
     if bal_ok: rows.append([InlineKeyboardButton(text="✅ تایید و پرداخت", callback_data="panel_confirm")])
     else:      rows.append([InlineKeyboardButton(text="💳 شارژ موجودی", callback_data="user_deposit")])
-    rows.append([InlineKeyboardButton(text="❌ لغو", callback_data="user_home")])
+    rows.append([InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="user_home")])
     await msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 

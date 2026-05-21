@@ -27,6 +27,7 @@ class User(Base):
     referred_by   = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    language      = Column(String(8),  default="en",   nullable=False)
 
     orders       = relationship("Order",       back_populates="user", lazy="select")
     transactions = relationship("Transaction", back_populates="user", lazy="select")

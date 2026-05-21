@@ -62,6 +62,14 @@ async def set_phone(session: AsyncSession, telegram_id: int, phone: str):
     await session.commit()
 
 
+
+
+async def set_language(session: AsyncSession, telegram_id: int, language: str):
+    """Update user language preference."""
+    await session.execute(
+        update(User).where(User.telegram_id == telegram_id)
+        .values(language=language, updated_at=datetime.utcnow())
+    )
 async def add_balance(session: AsyncSession, user_id: int, amount: float):
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()

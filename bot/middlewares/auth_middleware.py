@@ -10,11 +10,12 @@ from aiogram.types import (
 )
 from db.database import AsyncSessionLocal
 from services.user_service import get_or_create_user, get_admin
+from i18n import t  # noqa: F401
 
 logger = logging.getLogger("auth")
 SUPERADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-FORCE_JOIN_BYPASS = {"fj_verify"}
+FORCE_JOIN_BYPASS = {"fj_verify", "lang_select_screen"}
 
 
 class AuthMiddleware(BaseMiddleware):
@@ -44,6 +45,7 @@ class AuthMiddleware(BaseMiddleware):
             is_admin_user = is_superadmin or (admin is not None)
 
             data["db_user"]      = user
+            data["user_lang"]    = getattr(user, "language", "en") or "en"
             data["db_session"]   = session
             data["is_new_user"]  = is_new
             data["admin_record"] = admin
@@ -52,7 +54,7 @@ class AuthMiddleware(BaseMiddleware):
 
         # ── Force-join check ────────────────────────────────────────────────
         if not is_admin_user:
-            bypass = isinstance(event, CallbackQuery) and event.data in FORCE_JOIN_BYPASS
+            bypass = isinstance(event, CallbackQuery) and (event.data in FORCE_JOIN_BYPASS or event.data.startswith("set_lang_"))
             if not bypass:
                 from services.force_join_service import (
                     is_force_join_enabled, get_force_join_settings, check_membership

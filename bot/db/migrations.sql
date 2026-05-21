@@ -97,3 +97,8 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='panel_name')
     THEN ALTER TABLE orders ADD COLUMN panel_name VARCHAR(64); END IF;
 END $$;
+
+-- ── i18n v4.0 ──────────────────────────────────────────────
+ALTER TABLE users ADD COLUMN IF NOT EXISTS language VARCHAR(8) DEFAULT 'en' NOT NULL;
+INSERT INTO admin_settings (key, value) VALUES ('active_languages', 'en,fa,ar,he,ru') ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('default_language', 'en') ON CONFLICT (key) DO NOTHING;

@@ -18,6 +18,8 @@ from services.settings_service import get_setting, get_wallets, get_active_coins
 from services.order_service import get_user_orders, get_order_by_id
 from services.price_service import get_price_usd, usd_to_coin, format_amount
 from services.smmpass import get_order_status
+from i18n import t, lang_keyboard, LANGUAGES
+from services.user_service import set_language as _set_user_lang  # noqa
 
 logger = logging.getLogger("user")
 router = Router()
@@ -41,8 +43,7 @@ class UserState(StatesGroup):
     deposit_method = State()
 
 
-async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMarkup:
-    """منوی داینامیک — SMMPass (اگه فعال باشه) + پنل‌های دستی از DB"""
+async def main_menu_kb(smm_title: str = "🛒 SMM Panel", lang: str = "en") -> InlineKeyboardMarkup:
     rows = []
     try:
         async with AsyncSessionLocal() as _ss:
@@ -57,22 +58,84 @@ async def main_menu_kb(smm_title: str = "🛒 پنل SMM") -> InlineKeyboardMark
             panels = await get_all_panels(_ps, active_only=True)
         for p in panels:
             rows.append([InlineKeyboardButton(
-                text=(p.button_label or p.name or f"Panel {p.id}").strip() or f"Panel {p.id}",
+                text=(p.button_label or p.name or f"Panel {p.id}").strip(),
                 callback_data=f"panel_user_{p.id}"
             )])
     except Exception:
         pass
     rows.append([
-        InlineKeyboardButton(text="💰 کیف پول",      callback_data="user_wallet"),
-        InlineKeyboardButton(text="📦 سفارش‌های من", callback_data="user_orders"),
+        InlineKeyboardButton(text=t("btn_wallet",  lang), callback_data="user_wallet"),
+        InlineKeyboardButton(text=t("btn_orders",  lang), callback_data="user_orders"),
     ])
     rows.append([
-        InlineKeyboardButton(text="👤 پروفایل",      callback_data="user_profile"),
-        InlineKeyboardButton(text="📞 پشتیبانی",     callback_data="user_support"),
+        InlineKeyboardButton(text=t("btn_profile", lang), callback_data="user_profile"),
+        InlineKeyboardButton(text=t("btn_support", lang), callback_data="user_support"),
     ])
+    rows.append([InlineKeyboardButton(text=t("btn_change_lang", lang), callback_data="user_change_lang")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 @router.message(F.text.startswith("/start"))
+async def cmd_start(msg: Message, state: FSMContext,
+                    db_user: User = None, is_new_user: bool = False,
+                    is_admin: bool = False, is_superadmin: bool = False,
+                    user_lang: str = "en"):
+    await state.clear()
+    lang = getattr(db_user, "language", None) or user_lang or "en"
+    async with AsyncSessionLocal() as _s:
+        bot_name   = await get_setting(_s, "bot_name", "SMM Panel")
+        active_raw = await get_setting(_s, "active_languages", "en,fa,ar,he,ru")
+    active_langs = [x.strip() for x in active_raw.split(",") if x.strip() in LANGUAGES]
+    if is_superadmin or is_admin:
+        name = db_user.display_name() if db_user else (msg.from_user.first_name or "User")
+        bal  = float(db_user.balance or 0) if db_user else 0
+        await msg.answer(
+            f"👋 <b>{name}</b> | 🔑 Admin\n💰 Balance: <b>${bal:.2f}</b>\n\nChoose a section:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=t("admin_panel_btn","en"), callback_data="menu_admin")],
+                [InlineKeyboardButton(text=t("user_panel_btn", "en"), callback_data="user_home")],
+            ]),
+            parse_mode="HTML",
+        )
+        return
+    if is_new_user or not getattr(db_user, "language", None):
+        kb   = lang_keyboard(active_langs)
+        text = (
+            f"🚀 <b>{bot_name}</b>\n\n"
+            "🌍 <b>Please choose your language / انتخاب زبان</b>\n\n"
+            "🇬🇧 English  |  🇮🇷 فارسی  |  🇸🇦 عربي  |  🇮🇱 עברית  |  🇷🇺 Русский"
+        )
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+        return
+    await send_home(msg, db_user, lang=lang)
+
+
+async def send_home(target, db_user: User, lang: str = "en", edit: bool = False):
+    """Send or edit main menu in user language."""
+    async with AsyncSessionLocal() as _s:
+        bot_name  = await get_setting(_s, "bot_name", "SMM Panel")
+        smm_title = await get_setting(_s, "smm_panel_title", "🛒 SMM Panel")
+        welcome   = await get_setting(_s, "welcome_message", "")
+    name = db_user.display_name() if db_user else "User"
+    bal  = float(db_user.balance or 0) if db_user else 0
+    sep  = "━" * 28
+    text = (
+        f"🚀 <b>{bot_name}</b>\n{sep}\n"
+        + (f"👋 {welcome}\n" if welcome else "")
+        + f"👤 <b>{name}</b>\n"
+        + f"{t('balance_label', lang)}: <b>${bal:.2f}</b>\n\n"
+        + t("choose_section", lang)
+    )
+    kb = await main_menu_kb(smm_title, lang=lang)
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await target.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
 async def cmd_start(msg: Message, state: FSMContext,
                     db_user: User = None, is_new_user: bool = False,
                     is_admin: bool = False, is_superadmin: bool = False):
@@ -106,6 +169,14 @@ async def cmd_start(msg: Message, state: FSMContext,
 
 
 @router.callback_query(F.data == "user_home")
+async def user_home(cb: CallbackQuery, state: FSMContext,
+                    db_user: User = None, user_lang: str = "en"):
+    await state.clear()
+    await cb.answer()
+    lang = getattr(db_user, "language", None) or user_lang or "en"
+    await send_home(cb.message, db_user, lang=lang, edit=True)
+
+
 async def user_home(cb: CallbackQuery, state: FSMContext, db_user: User = None):
     await state.clear()
     await cb.answer()
