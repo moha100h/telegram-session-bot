@@ -4,11 +4,11 @@ from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import select
 from db.database import AsyncSessionLocal
-from db.models import User
+from db.models import User, PanelCategory
 from services.panel_service import (
-    get_panel, get_categories, get_services, get_service,
-    get_category, create_panel_order
+    get_panel, get_categories, get_services, get_service, create_panel_order
 )
 from services.user_service import get_user_by_telegram_id, deduct_balance
 from services.notification_service import notify_order_placed, notify_group_new_order
@@ -23,6 +23,10 @@ class PanelUserState(StatesGroup):
 def _kb(*rows): return InlineKeyboardMarkup(inline_keyboard=list(rows))
 def _back(cb, lang="en"): return _kb([InlineKeyboardButton(text=t("btn_back",lang), callback_data=cb)])
 def _cancel(cb="user_home", lang="en"): return _kb([InlineKeyboardButton(text=t("btn_cancel",lang), callback_data=cb)])
+
+async def _get_cat(session, cat_id: int):
+    result = await session.execute(select(PanelCategory).where(PanelCategory.id == cat_id))
+    return result.scalar_one_or_none()
 
 @router.callback_query(F.data.regexp(r"^panel_user_\d+$"))
 async def panel_user_cats(cb: CallbackQuery, db_user: User = None, user_lang: str = "en"):
@@ -45,7 +49,7 @@ async def panel_user_svcs(cb: CallbackQuery, db_user: User = None, user_lang: st
     lang = getattr(db_user,"language",None) or user_lang or "en"
     _, _, cid, pid = cb.data.split("_"); cid, pid = int(cid), int(pid)
     async with AsyncSessionLocal() as s:
-        cat  = await get_category(s, cid)
+        cat  = await _get_cat(s, cid)
         svcs = await get_services(s, cid, active_only=True)
     if not cat:
         await cb.message.edit_text(t("cat_not_found",lang), reply_markup=_back(f"panel_user_{pid}",lang)); return
@@ -64,7 +68,10 @@ async def panel_user_svc_detail(cb: CallbackQuery, state: FSMContext, db_user: U
     if not svc or not svc.is_active:
         await cb.message.edit_text(t("svc_not_found",lang), reply_markup=_back(f"panel_user_{pid}",lang)); return
     desc_line = f"\n📄 {escape(svc.description)}" if svc.description else ""
-    text = f"📌 <b>{escape(svc.name)}</b>\n{'━'*28}{desc_line}\n💰 {t('order_cost',lang)}: <b>${svc.price:.4f}</b>\n{t('smm_min_max',lang,mn=svc.min_qty,mx=svc.max_qty)}\n{t('smm_your_balance',lang,bal=f'{bal:.2f}')}"
+    text = (f"📌 <b>{escape(svc.name)}</b>\n{'━'*28}{desc_line}\n"
+            f"💰 {t('order_cost',lang)}: <b>${svc.price:.4f}</b>\n"
+            f"{t('smm_min_max',lang,mn=svc.min_qty,mx=svc.max_qty)}\n"
+            f"{t('smm_your_balance',lang,bal=f'{bal:.2f}')}")
     rows = [
         [InlineKeyboardButton(text=t("btn_new_order",lang), callback_data=f"panel_order_start_{sid}_{pid}")],
         [InlineKeyboardButton(text=t("btn_back",lang), callback_data=f"panel_cat_{svc.category_id}_{pid}")]
@@ -170,8 +177,8 @@ async def panel_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot, db_user:
         ok, new_bal = await deduct_balance(s, user.id, total)
         if not ok:
             await cb.message.edit_text(t("order_deduct_error",lang), reply_markup=_back("user_home",lang)); return
-        _cat     = await get_category(s, svc.category_id)
-        cat_name = _cat.name if _cat else "—"
+        cat      = await _get_cat(s, svc.category_id)
+        cat_name = cat.name if cat else "—"
         order = await create_panel_order(
             s, user_id=user.id, panel_id=panel.id, service_id=svc.id,
             link=link, quantity=qty, amount=total, note=note
