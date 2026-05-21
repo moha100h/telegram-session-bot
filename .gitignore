@@ -1,9 +1,0 @@
-.env
-sessions/
-backups/
-data/
-__pycache__/
-*.pyc
-*.session
-*.session-journal
-.DS_Store
