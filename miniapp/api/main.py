@@ -195,5 +195,89 @@ async def admin_transactions(page:int=1, limit:int=20, status:Optional[str]=None
     rows  = (await db.execute(text(f"SELECT * FROM transactions {where} ORDER BY created_at DESC LIMIT :lim OFFSET :off"), params)).mappings().all()
     return {"total": total, "page": page, "items": [{k:(str(v) if isinstance(v,datetime) else v) for k,v in r.items()} for r in rows]}
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# USER — پنل‌ها، دسته‌بندی‌ها، خدمات
+# ══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/user/panels")
+async def user_panels(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(text(
+        "SELECT id, button_label, description FROM panels WHERE is_active=true ORDER BY sort_order"
+    ))).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.get("/api/user/panels/{panel_id}/categories")
+async def user_panel_cats(panel_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(text(
+        "SELECT pc.id, pc.name, pc.icon, "
+        "(SELECT COUNT(*) FROM panel_services ps WHERE ps.category_id=pc.id AND ps.is_active=true) as service_count "
+        "FROM panel_categories pc WHERE pc.panel_id=:pid AND pc.is_active=true ORDER BY pc.sort_order"
+    ), {"pid": panel_id})).mappings().all()
+    return [dict(r) for r in rows]
+
+@app.get("/api/user/panels/{panel_id}/categories/{cat_id}/services")
+async def user_panel_svcs(panel_id: int, cat_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(text(
+        "SELECT id, name, description, price, min_qty, max_qty "
+        "FROM panel_services WHERE category_id=:cid AND is_active=true ORDER BY sort_order"
+    ), {"cid": cat_id})).mappings().all()
+    return [{k: (float(v) if k == "price" else v) for k, v in r.items()} for r in rows]
+
+class PlaceOrderBody(BaseModel):
+    service_id: int
+    link: str
+    quantity: int
+    note: Optional[str] = None
+
+@app.post("/api/user/panels/{panel_id}/order")
+async def place_panel_order(panel_id: int, body: PlaceOrderBody,
+                             user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # بررسی سرویس
+    svc = (await db.execute(text(
+        "SELECT id, name, price, min_qty, max_qty FROM panel_services WHERE id=:sid AND is_active=true"
+    ), {"sid": body.service_id})).mappings().first()
+    if not svc:
+        raise HTTPException(404, "Service not found")
+    svc = dict(svc)
+
+    # اعتبارسنجی تعداد
+    if body.quantity < svc["min_qty"] or body.quantity > svc["max_qty"]:
+        raise HTTPException(400, f"Quantity must be between {svc['min_qty']} and {svc['max_qty']}")
+
+    total = float(svc["price"]) * body.quantity
+
+    # بررسی موجودی
+    bal = float(user.get("balance") or 0)
+    if bal < total:
+        raise HTTPException(400, f"Insufficient balance. Need ${total:.4f}, have ${bal:.4f}")
+
+    # کسر موجودی
+    new_bal = bal - total
+    await db.execute(text("UPDATE users SET balance=:b WHERE id=:uid"), {"b": new_bal, "uid": user["id"]})
+
+    # ثبت سفارش
+    r = await db.execute(text(
+        "INSERT INTO panel_orders(user_id, panel_id, service_id, service_name, panel_name, link, quantity, total_price, status, note, created_at, updated_at) "
+        "VALUES(:uid, :pid, :sid, :sname, (SELECT button_label FROM panels WHERE id=:pid), :link, :qty, :price, 'pending', :note, NOW(), NOW()) "
+        "RETURNING id"
+    ), {
+        "uid": user["id"], "pid": panel_id, "sid": svc["id"],
+        "sname": svc["name"], "link": body.link,
+        "qty": body.quantity, "price": total,
+        "note": body.note or ""
+    })
+    order_id = r.scalar()
+
+    # ثبت تراکنش
+    await db.execute(text(
+        "INSERT INTO transactions(user_id, type, amount, status, description, created_at) "
+        "VALUES(:uid, 'panel_order_charge', :am, 'completed', :desc, NOW())"
+    ), {"uid": user["id"], "am": -total, "desc": f"Order #{order_id} - {svc['name']}"})
+
+    await db.commit()
+    return {"ok": True, "order_id": order_id, "total": total, "new_balance": new_bal}
+
+
 @app.get("/api/health")
 async def health(): return {"status": "ok"}
