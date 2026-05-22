@@ -203,7 +203,7 @@ async def admin_transactions(page:int=1, limit:int=20, status:Optional[str]=None
 @app.get("/api/user/panels")
 async def user_panels(user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(text(
-        "SELECT id, button_label, description FROM panels WHERE is_active=true ORDER BY sort_order"
+        "SELECT id, button_label, description FROM panels WHERE is_active=true ORDER BY order_index"
     ))).mappings().all()
     return [dict(r) for r in rows]
 
@@ -212,7 +212,7 @@ async def user_panel_cats(panel_id: int, user=Depends(get_current_user), db: Asy
     rows = (await db.execute(text(
         "SELECT pc.id, pc.name, pc.icon, "
         "(SELECT COUNT(*) FROM panel_services ps WHERE ps.category_id=pc.id AND ps.is_active=true) as service_count "
-        "FROM panel_categories pc WHERE pc.panel_id=:pid AND pc.is_active=true ORDER BY pc.sort_order"
+        "FROM panel_categories pc WHERE pc.panel_id=:pid AND pc.is_active=true ORDER BY pc.order_index"
     ), {"pid": panel_id})).mappings().all()
     return [dict(r) for r in rows]
 
@@ -220,7 +220,7 @@ async def user_panel_cats(panel_id: int, user=Depends(get_current_user), db: Asy
 async def user_panel_svcs(panel_id: int, cat_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(text(
         "SELECT id, name, description, price, min_qty, max_qty "
-        "FROM panel_services WHERE category_id=:cid AND is_active=true ORDER BY sort_order"
+        "FROM panel_services WHERE category_id=:cid AND is_active=true ORDER BY order_index"
     ), {"cid": cat_id})).mappings().all()
     return [{k: (float(v) if k == "price" else v) for k, v in r.items()} for r in rows]
 
@@ -257,14 +257,16 @@ async def place_panel_order(panel_id: int, body: PlaceOrderBody,
     await db.execute(text("UPDATE users SET balance=:b WHERE id=:uid"), {"b": new_bal, "uid": user["id"]})
 
     # ثبت سفارش
+    panel_row = (await db.execute(text("SELECT button_label FROM panels WHERE id=:pid"), {"pid": panel_id})).first()
+    panel_name = panel_row[0] if panel_row else ""
     r = await db.execute(text(
-        "INSERT INTO panel_orders(user_id, panel_id, service_id, service_name, panel_name, link, quantity, total_price, status, note, created_at, updated_at) "
-        "VALUES(:uid, :pid, :sid, :sname, (SELECT button_label FROM panels WHERE id=:pid), :link, :qty, :price, 'pending', :note, NOW(), NOW()) "
+        "INSERT INTO panel_orders(user_id, panel_id, service_id, service_name, panel_name, link, quantity, unit_price, total_price, status, note, created_at, updated_at) "
+        "VALUES(:uid, :pid, :sid, :sname, :pname, :link, :qty, :uprice, :price, 'pending', :note, NOW(), NOW()) "
         "RETURNING id"
     ), {
         "uid": user["id"], "pid": panel_id, "sid": svc["id"],
-        "sname": svc["name"], "link": body.link,
-        "qty": body.quantity, "price": total,
+        "sname": svc["name"], "pname": panel_name, "link": body.link,
+        "qty": body.quantity, "uprice": float(svc["price"]), "price": total,
         "note": body.note or ""
     })
     order_id = r.scalar()
