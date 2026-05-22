@@ -55,13 +55,17 @@ async def _get_admin_by_tg(db, tg_id):
     row = r.mappings().first()
     return dict(row) if row else None
 
-async def get_current_user(x_init_data: str = Header(..., alias="X-Init-Data"), db: AsyncSession = Depends(get_db)):
+async def get_current_user(x_init_data: str = Header(None, alias="X-Init-Data"), db: AsyncSession = Depends(get_db)):
+    if not x_init_data:
+        raise HTTPException(401, "Unauthorized: missing init data")
     tg = verify_telegram_webapp(x_init_data)
     user = await _get_user_by_tg(db, tg.get("id"))
     if not user: raise HTTPException(404, "User not found")
     return user
 
-async def get_admin(x_init_data: str = Header(..., alias="X-Init-Data"), db: AsyncSession = Depends(get_db)):
+async def get_admin(x_init_data: str = Header(None, alias="X-Init-Data"), db: AsyncSession = Depends(get_db)):
+    if not x_init_data:
+        raise HTTPException(401, "Unauthorized: missing init data")
     tg = verify_telegram_webapp(x_init_data)
     tg_id = tg.get("id")
     if tg_id != ADMIN_ID:
