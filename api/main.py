@@ -5,9 +5,11 @@ from typing import Optional
 from urllib.parse import unquote
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy import select, func, desc, update, text
+from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("miniapp")
@@ -21,6 +23,19 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 app = FastAPI(title="TSB MiniApp API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# serve static miniapp
+import os as _os
+_static = _os.path.join(_os.path.dirname(__file__), "..", "miniapp")
+if _os.path.isdir(_static):
+    app.mount("/static", StaticFiles(directory=_static), name="static")
+
+@app.get("/")
+async def root():
+    idx = _os.path.join(_static, "index.html")
+    if _os.path.exists(idx):
+        return FileResponse(idx)
+    return {"status": "ok"}
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def verify_tg(init_data: str) -> dict:
@@ -51,13 +66,13 @@ def row2dict(row):
         if isinstance(v, datetime): d[k] = v.isoformat()
     return d
 
-async def get_user(db, tg_id):
+async def get_user_by_tg(db, tg_id):
     r = await db.execute(text("SELECT * FROM users WHERE telegram_id=:t"), {"t": tg_id})
     return r.mappings().first()
 
 async def require_user(x: str = Header(..., alias="X-Init-Data"), db: AsyncSession = Depends(get_db)):
     tg = verify_tg(x)
-    u = await get_user(db, tg.get("id"))
+    u = await get_user_by_tg(db, tg.get("id"))
     if not u: raise HTTPException(404, "User not found")
     return dict(u)
 
@@ -67,7 +82,7 @@ async def require_admin(x: str = Header(..., alias="X-Init-Data"), db: AsyncSess
     if tg_id != ADMIN_ID:
         r = await db.execute(text("SELECT id FROM admin_users WHERE telegram_id=:t"), {"t": tg_id})
         if not r.first(): raise HTTPException(403, "Not admin")
-    u = await get_user(db, tg_id)
+    u = await get_user_by_tg(db, tg_id)
     return dict(u) if u else {"telegram_id": tg_id}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,13 +93,13 @@ async def user_me(user=Depends(require_user)):
     return user
 
 # ══════════════════════════════════════════════════════════════════════════════
-# USER — پنل‌ها (لیست پنل‌های فعال)
+# USER — پنل‌ها
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/user/panels")
 async def user_panels(user=Depends(require_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(text(
-        "SELECT id, name, button_label, description, order_index FROM panels "
-        "WHERE is_active=true ORDER BY order_index, id"
+        "SELECT id, name, button_label, description, order_index "
+        "FROM panels WHERE is_active=true ORDER BY order_index, id"
     ))).mappings().all()
     return [dict(r) for r in rows]
 
@@ -93,7 +108,6 @@ async def user_panels(user=Depends(require_user), db: AsyncSession = Depends(get
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/user/panels/{panel_id}/categories")
 async def user_panel_cats(panel_id: int, user=Depends(require_user), db: AsyncSession = Depends(get_db)):
-    # بررسی پنل فعال
     p = (await db.execute(text("SELECT id FROM panels WHERE id=:pid AND is_active=true"), {"pid": panel_id})).first()
     if not p: raise HTTPException(404, "Panel not found")
     rows = (await db.execute(text(
@@ -113,8 +127,7 @@ async def user_panel_cats(panel_id: int, user=Depends(require_user), db: AsyncSe
 async def user_panel_svcs(panel_id: int, cat_id: int, user=Depends(require_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(text(
         "SELECT id, name, description, price, min_qty, max_qty, order_index "
-        "FROM panel_services WHERE category_id=:cid AND is_active=true "
-        "ORDER BY order_index, id"
+        "FROM panel_services WHERE category_id=:cid AND is_active=true ORDER BY order_index, id"
     ), {"cid": cat_id})).mappings().all()
     return [dict(r) for r in rows]
 
@@ -130,9 +143,8 @@ class PanelOrderBody(BaseModel):
 
 @app.post("/api/user/orders/panel")
 async def create_panel_order(body: PanelOrderBody, user=Depends(require_user), db: AsyncSession = Depends(get_db)):
-    # بررسی خدمت
     svc = (await db.execute(text(
-        "SELECT ps.*, pc.panel_id, p.name as panel_name, p.button_label, p.is_active as panel_active "
+        "SELECT ps.*, pc.panel_id, p.button_label, p.is_active as panel_active "
         "FROM panel_services ps "
         "JOIN panel_categories pc ON pc.id=ps.category_id "
         "JOIN panels p ON p.id=pc.panel_id "
@@ -146,7 +158,6 @@ async def create_panel_order(body: PanelOrderBody, user=Depends(require_user), d
     bal = float(user.get("balance") or 0)
     if bal < total - 1e-9:
         raise HTTPException(400, f"Insufficient balance. Need ${total:.4f}, have ${bal:.2f}")
-    # کسر موجودی + ثبت سفارش
     new_bal = round(bal - total, 6)
     await db.execute(text("UPDATE users SET balance=:b WHERE id=:uid"), {"b": new_bal, "uid": user["id"]})
     r = await db.execute(text(
@@ -173,28 +184,28 @@ async def create_panel_order(body: PanelOrderBody, user=Depends(require_user), d
 # USER — سفارشات پنل
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/user/panel-orders")
-async def user_panel_orders(page:int=1, limit:int=20, status:Optional[str]=None,
+async def user_panel_orders(page: int = 1, limit: int = 20, status: Optional[str] = None,
                              user=Depends(require_user), db: AsyncSession = Depends(get_db)):
     where = "WHERE user_id=:uid" + (" AND status=:st" if status else "")
     params = {"uid": user["id"]}
     if status: params["st"] = status
     total = (await db.execute(text(f"SELECT COUNT(*) FROM panel_orders {where}"), params)).scalar()
-    rows  = (await db.execute(text(
+    rows = (await db.execute(text(
         f"SELECT id,panel_id,service_id,service_name,panel_name,quantity,unit_price,total_price,"
         f"link,note,status,completed_qty,refund_amount,admin_note,created_at,updated_at "
         f"FROM panel_orders {where} ORDER BY created_at DESC LIMIT :lim OFFSET :off"
-    ), {**params, "lim": limit, "off": (page-1)*limit})).mappings().all()
+    ), {**params, "lim": limit, "off": (page - 1) * limit})).mappings().all()
     return {"total": total, "page": page, "items": [row2dict(r) for r in rows]}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # USER — تراکنش‌ها
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/user/transactions")
-async def user_transactions(page:int=1, limit:int=20,
+async def user_transactions(page: int = 1, limit: int = 20,
                              user=Depends(require_user), db: AsyncSession = Depends(get_db)):
-    params = {"uid": user["id"], "lim": limit, "off": (page-1)*limit}
+    params = {"uid": user["id"], "lim": limit, "off": (page - 1) * limit}
     total = (await db.execute(text("SELECT COUNT(*) FROM transactions WHERE user_id=:uid"), {"uid": user["id"]})).scalar()
-    rows  = (await db.execute(text(
+    rows = (await db.execute(text(
         "SELECT * FROM transactions WHERE user_id=:uid ORDER BY created_at DESC LIMIT :lim OFFSET :off"
     ), params)).mappings().all()
     return {"total": total, "page": page, "items": [row2dict(r) for r in rows]}
@@ -225,9 +236,9 @@ async def admin_stats(admin=Depends(require_admin), db: AsyncSession = Depends(g
 # ADMIN — کاربران
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/admin/users")
-async def admin_users(page:int=1, limit:int=20, search:Optional[str]=None,
+async def admin_users(page: int = 1, limit: int = 20, search: Optional[str] = None,
                       admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    where, params = "", {"lim": limit, "off": (page-1)*limit}
+    where, params = "", {"lim": limit, "off": (page - 1) * limit}
     if search:
         where = "WHERE username ILIKE :s OR first_name ILIKE :s OR last_name ILIKE :s"
         params["s"] = f"%{search}%"
@@ -235,27 +246,30 @@ async def admin_users(page:int=1, limit:int=20, search:Optional[str]=None,
             where += " OR telegram_id=:tid"
             params["tid"] = int(search)
     total = (await db.execute(text(f"SELECT COUNT(*) FROM users {where}"), params)).scalar()
-    rows  = (await db.execute(text(
+    rows = (await db.execute(text(
         f"SELECT id,telegram_id,username,first_name,last_name,balance,is_banned,referral_count,created_at "
         f"FROM users {where} ORDER BY created_at DESC LIMIT :lim OFFSET :off"
     ), params)).mappings().all()
     return {"total": total, "page": page, "items": [row2dict(r) for r in rows]}
 
 @app.post("/api/admin/users/{uid}/ban")
-async def ban_user(uid:int, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def ban_user(uid: int, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     await db.execute(text("UPDATE users SET is_banned=true WHERE id=:uid"), {"uid": uid})
-    await db.commit(); return {"ok": True}
+    await db.commit()
+    return {"ok": True}
 
 @app.post("/api/admin/users/{uid}/unban")
-async def unban_user(uid:int, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def unban_user(uid: int, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     await db.execute(text("UPDATE users SET is_banned=false WHERE id=:uid"), {"uid": uid})
-    await db.commit(); return {"ok": True}
+    await db.commit()
+    return {"ok": True}
 
 class ChargeBody(BaseModel):
-    amount: float; note: Optional[str] = None
+    amount: float
+    note: Optional[str] = None
 
 @app.post("/api/admin/users/{uid}/charge")
-async def charge_user(uid:int, body:ChargeBody, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def charge_user(uid: int, body: ChargeBody, admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     r = (await db.execute(text("SELECT balance FROM users WHERE id=:uid"), {"uid": uid})).first()
     if not r: raise HTTPException(404)
     new_bal = round(float(r[0] or 0) + body.amount, 6)
@@ -271,13 +285,13 @@ async def charge_user(uid:int, body:ChargeBody, admin=Depends(require_admin), db
 # ADMIN — سفارشات پنل
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/admin/panel-orders")
-async def admin_panel_orders(page:int=1, limit:int=20, status:Optional[str]=None,
+async def admin_panel_orders(page: int = 1, limit: int = 20, status: Optional[str] = None,
                               admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     where = ("WHERE status=:st" if status else "")
-    params = {"lim": limit, "off": (page-1)*limit}
+    params = {"lim": limit, "off": (page - 1) * limit}
     if status: params["st"] = status
     total = (await db.execute(text(f"SELECT COUNT(*) FROM panel_orders {where}"), params)).scalar()
-    rows  = (await db.execute(text(
+    rows = (await db.execute(text(
         f"SELECT id,user_id,panel_id,service_id,service_name,panel_name,quantity,unit_price,total_price,"
         f"link,note,status,completed_qty,refund_amount,admin_note,group_message_id,created_at,updated_at "
         f"FROM panel_orders {where} ORDER BY created_at DESC LIMIT :lim OFFSET :off"
@@ -290,7 +304,7 @@ class UpdateOrderBody(BaseModel):
     completed_qty: Optional[int] = None
 
 @app.patch("/api/admin/panel-orders/{oid}")
-async def update_panel_order(oid:int, body:UpdateOrderBody,
+async def update_panel_order(oid: int, body: UpdateOrderBody,
                               admin=Depends(require_admin), db: AsyncSession = Depends(get_db)):
     r = (await db.execute(text(
         "SELECT po.*, u.balance as user_balance, u.id as user_db_id "
@@ -298,11 +312,10 @@ async def update_panel_order(oid:int, body:UpdateOrderBody,
     ), {"oid": oid})).mappings().first()
     if not r: raise HTTPException(404)
     order = dict(r)
-    if order["status"] in ("completed","rejected","partial"):
+    if order["status"] in ("completed", "rejected", "partial"):
         raise HTTPException(400, "Order already finalized")
 
     refund = 0.0
-    # محاسبه بازگشت وجه
     if body.status == "rejected":
         refund = float(order["total_price"] or 0)
     elif body.status == "partial" and body.completed_qty is not None:
@@ -312,9 +325,12 @@ async def update_panel_order(oid:int, body:UpdateOrderBody,
 
     sets = ["status=:st", "updated_at=NOW()"]
     params = {"st": body.status, "oid": oid}
-    if body.admin_note is not None: sets.append("admin_note=:note"); params["note"] = body.admin_note
-    if body.completed_qty is not None: sets.append("completed_qty=:cq"); params["cq"] = body.completed_qty
-    if refund > 0: sets.append("refund_amount=:ref"); params["ref"] = refund
+    if body.admin_note is not None:
+        sets.append("admin_note=:note"); params["note"] = body.admin_note
+    if body.completed_qty is not None:
+        sets.append("completed_qty=:cq"); params["cq"] = body.completed_qty
+    if refund > 0:
+        sets.append("refund_amount=:ref"); params["ref"] = refund
 
     await db.execute(text(f"UPDATE panel_orders SET {', '.join(sets)} WHERE id=:oid"), params)
 
@@ -332,4 +348,5 @@ async def update_panel_order(oid:int, body:UpdateOrderBody,
     return {"ok": True, "refund": refund}
 
 @app.get("/api/health")
-async def health(): return {"status": "ok", "version": "2.0.0"}
+async def health():
+    return {"status": "ok", "version": "2.0.0"}
