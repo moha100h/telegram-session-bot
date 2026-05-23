@@ -1,6 +1,6 @@
 """
 Order Polling Service
-هر 5 دقیقه سفارشات pending/processing رو از SmmPass API چک میکنه
+هر 1 دقیقه سفارشات pending/processing رو از SmmPass API چک میکنه
 و در صورت تغییر وضعیت، کاربر رو نوتیف میده.
 """
 import asyncio
@@ -13,7 +13,7 @@ from services.notification_service import notify_order_status, notify_refund
 
 logger = logging.getLogger("order_polling")
 
-POLL_INTERVAL = 300  # هر 5 دقیقه
+POLL_INTERVAL = 60  # هر 1 دقیقه
 ACTIVE_STATUSES = ("pending", "processing", "in progress")
 
 STATUS_FA = {
@@ -138,7 +138,7 @@ async def poll_orders(bot) -> None:
 
 async def start_order_polling(bot) -> None:
     """Background task — اجرا میشه از main.py"""
-    logger.info("Order polling service started.")
+    logger.info("Order polling service started (interval: 60s).")
     while True:
         try:
             await poll_orders(bot)
