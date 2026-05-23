@@ -47,6 +47,8 @@ async def main():
     dp.include_router(smmpass_router)
     await init_db()
     await set_commands(bot)
+
+    # ── Backup scheduler ──────────────────────────────────────────────
     try:
         from services.backup_service import start_scheduler as _sb
         from db.database import AsyncSessionLocal as _ASL
@@ -57,6 +59,15 @@ async def main():
             _sb(bot); logger.info("Backup scheduler started.")
     except Exception as _e:
         logger.warning(f"Backup scheduler not started: {_e}")
+
+    # ── Order polling (SmmPass auto status update) ────────────────────
+    try:
+        from services.order_polling_service import start_order_polling
+        asyncio.create_task(start_order_polling(bot))
+        logger.info("Order polling service started.")
+    except Exception as _e:
+        logger.warning(f"Order polling not started: {_e}")
+
     logger.info("Bot started.")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
