@@ -8,16 +8,13 @@
 
 **پنل ادمین:** مدیریت کاربران | تایید واریز | Multi-Panel | بکاپ خودکار | تنظیمات کامل
 
-**بکاپ v3.0:**
-- PostgreSQL dump (gzip + --clean)
-- JSON export همه جداول (بدون نیاز به psql)
-- Sessions + App data + Redis RDB
-- SHA-256 checksum
-- ذخیره local آخرین ۱۰ بکاپ در `/app/data/backups/`
-- ارسال خودکار به گروه تلگرام
-- بازگردانی کامل با verify
+## 🚀 نصب (یک دستور)
 
-## 🚀 نصب
+```bash
+curl -fsSL https://raw.githubusercontent.com/moha100h/telegram-session-bot/main/install.sh | bash
+```
+
+یا:
 
 ```bash
 git clone https://github.com/moha100h/telegram-session-bot.git /opt/telegram-session-bot
@@ -25,56 +22,29 @@ cd /opt/telegram-session-bot
 sudo bash install.sh
 ```
 
-## ⚙️ پیکربندی
+فقط دو چیز لازم است:
+- `BOT_TOKEN` — از @BotFather
+- `ADMIN_ID` — آیدی عددی تلگرام شما
+
+بقیه تنظیمات **خودکار** انجام می‌شود.
+
+## 🖥️ سیستم‌عامل پشتیبانی‌شده
+
+- Ubuntu 20.04 / 22.04 / 24.04
+- Debian 11 / 12
+
+## 🐳 دستورات Docker
 
 ```bash
-cp .env.example .env && nano .env
+docker compose logs -f bot     # لاگ زنده
+docker compose restart bot     # ری‌استارت
+docker compose ps              # وضعیت
+sudo bash install.sh           # آپدیت
 ```
 
-| متغیر | توضیح |
-|---|---|
-| `BOT_TOKEN` | توکن از @BotFather |
-| `ADMIN_ID` | Telegram ID ادمین |
-| `POSTGRES_PASSWORD` | پسورد قوی |
-
-## 🐳 Docker
+## ⚙️ تنظیمات
 
 ```bash
-docker compose up -d
-docker compose logs -f bot
-git pull && docker compose build --no-cache bot && docker compose up -d
+nano /opt/telegram-session-bot/.env
+docker compose restart bot
 ```
-
-## 🗄 ساختار بکاپ
-
-```
-backup_auto_20260518_120000.zip
-├── db/database_*.sql.gz    ← PostgreSQL dump
-├── db/export_*.json.gz     ← JSON همه جداول
-├── sessions/               ← سشن‌های تلگرام
-├── data/                   ← داده‌های اپ
-├── redis/dump.rdb          ← Redis snapshot
-└── metadata.json           ← آمار + SHA-256
-```
-
-## 📁 ساختار پروژه
-
-```
-bot/
-├── handlers/
-│   ├── admin_handler.py
-│   ├── user_handler.py
-│   ├── panel_admin_handler.py
-│   ├── panel_user_handler.py
-│   ├── smmpass_handler.py
-│   └── backup_handler.py
-├── services/
-│   ├── backup_service.py   ← v3.0
-│   └── ...
-└── db/
-    ├── models.py
-    ├── database.py
-    └── migrations.sql      ← v3.0
-```
-
-## 📄 License MIT
