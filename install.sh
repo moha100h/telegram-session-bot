@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Telegram Session Bot — Install / Update v3.2
+# Telegram Session Bot — Install / Update v3.3
 # Ubuntu 20.04 / 22.04 / 24.04 / Debian 11 / 12
 # ============================================================
 set -e
@@ -18,7 +18,7 @@ step()    { echo -e "\n${CYAN}${BOLD}══════════════�
 
 INSTALL_DIR="/opt/telegram-session-bot"
 REPO_URL="https://github.com/moha100h/telegram-session-bot.git"
-VERSION="3.2"
+VERSION="3.3"
 
 echo -e "\n${CYAN}${BOLD}"
 echo "  ████████╗███████╗██████╗      ██████╗  ██████╗ ████████╗"
@@ -31,7 +31,6 @@ echo -e "${NC}"
 echo -e "  ${BOLD}Telegram Session Bot — SMM Panel v${VERSION}${NC}"
 echo -e "  ${BLUE}https://github.com/moha100h/telegram-session-bot${NC}\n"
 
-# ── بررسی root ────────────────────────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && error "با root اجرا کنید: sudo bash install.sh"
 
 # ── پیش‌نیازها ────────────────────────────────────────────────────────────────
@@ -43,10 +42,10 @@ for pkg in curl git ca-certificates gnupg openssl; do
 done
 success "پیش‌نیازها OK"
 
-# ── Docker (روی هر نسخه Ubuntu/Debian) ───────────────────────────────────────
+# ── Docker ────────────────────────────────────────────────────────────────────
 step "2/6 — Docker"
 if ! command -v docker &>/dev/null; then
-    info "نصب Docker از get.docker.com ..."
+    info "نصب Docker..."
     curl -fsSL https://get.docker.com | sh
     systemctl enable docker --quiet
     systemctl start docker
@@ -55,7 +54,6 @@ else
     success "Docker: $(docker --version)"
 fi
 
-# Docker Compose plugin یا standalone
 if ! docker compose version &>/dev/null 2>&1; then
     info "نصب Docker Compose plugin..."
     apt-get install -y docker-compose-plugin -qq 2>/dev/null || true
@@ -73,7 +71,9 @@ success "Docker Compose: $(docker compose version 2>/dev/null || docker-compose 
 
 # ── سورس کد ──────────────────────────────────────────────────────────────────
 step "3/6 — سورس کد"
+IS_UPDATE=0
 if [ -d "$INSTALL_DIR/.git" ]; then
+    IS_UPDATE=1
     info "آپدیت از GitHub..."
     cd "$INSTALL_DIR"
     git fetch origin --quiet
@@ -86,7 +86,7 @@ else
 fi
 cd "$INSTALL_DIR"
 
-# ── تنظیم .env — فقط BOT_TOKEN و ADMIN_ID ───────────────────────────────────
+# ── تنظیم .env ───────────────────────────────────────────────────────────────
 step "4/6 — تنظیم .env"
 if [ ! -f ".env" ]; then
     cp .env.example .env
@@ -107,14 +107,13 @@ if [ ! -f ".env" ]; then
         warn "ADMIN_ID باید عدد باشد"
     done
 
-    # پسورد postgres خودکار
     PG_PASS=$(openssl rand -hex 24)
 
     sed -i "s|your_bot_token_here|${BOT_TOKEN}|"       .env
     sed -i "s|your_telegram_id_here|${ADMIN_ID}|"      .env
     sed -i "s|change_this_strong_password|${PG_PASS}|" .env
 
-    success ".env تنظیم شد (پسورد Postgres خودکار تولید شد)"
+    success ".env تنظیم شد"
 else
     warn ".env موجود است — تغییر نمی‌دهیم"
     info "برای ویرایش: nano $INSTALL_DIR/.env"
@@ -123,12 +122,21 @@ fi
 # ── Build و راه‌اندازی ────────────────────────────────────────────────────────
 step "5/6 — Build و راه‌اندازی"
 docker compose down --remove-orphans 2>/dev/null || true
-info "Build image (ممکن است چند دقیقه طول بکشد)..."
+
+# اگه آپدیته volume رو نگه دار، اگه نصب اوله پاک کن
+if [ "$IS_UPDATE" -eq 0 ]; then
+    info "پاک کردن volume های قدیمی..."
+    docker compose down -v 2>/dev/null || true
+    docker volume prune -f 2>/dev/null || true
+fi
+
+info "Build image..."
 docker compose build --no-cache bot
+info "راه‌اندازی سرویس‌ها..."
 docker compose up -d
 success "سرویس‌ها راه‌اندازی شدند"
 
-# ── Migrations ────────────────────────────────────────────────────────────────
+# ── Database ──────────────────────────────────────────────────────────────────
 step "6/6 — Database"
 info "صبر برای PostgreSQL..."
 RETRIES=0
@@ -139,13 +147,8 @@ until docker compose exec -T postgres pg_isready -U smm -d smmbot &>/dev/null; d
 done
 success "PostgreSQL آماده"
 
-info "اجرای migrations..."
-docker compose exec -T postgres psql -U smm -d smmbot \
-    < bot/db/migrations.sql 2>&1 | grep -v "^NOTICE" | grep -v "^$" || true
-success "Migrations OK"
-
 # ── وضعیت نهایی ──────────────────────────────────────────────────────────────
-sleep 3
+sleep 5
 echo ""
 docker compose ps
 echo ""
@@ -154,7 +157,7 @@ docker logs tsb_bot --tail=20 2>&1 || true
 echo ""
 
 echo -e "\n${GREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║   ✅  نصب با موفقیت انجام شد   ║${NC}"
+echo -e "${GREEN}${BOLD}║   ✅  نصب/آپدیت با موفقیت انجام شد   ║${NC}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════╝${NC}\n"
 
 echo -e "${CYAN}${BOLD}  دستورات مفید:${NC}"
