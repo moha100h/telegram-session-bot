@@ -8,10 +8,17 @@ from sqlalchemy.orm import DeclarativeBase
 
 logger = logging.getLogger("db")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://smm:smm123@postgres:5432/smmbot"
-)
+# اگه DATABASE_URL مستقیم ست بود استفاده کن، وگرنه از اجزا بساز
+_db_url = os.getenv("DATABASE_URL")
+if not _db_url:
+    _host = os.getenv("POSTGRES_HOST", "postgres")
+    _port = os.getenv("POSTGRES_PORT", "5432")
+    _user = os.getenv("POSTGRES_USER", "smm")
+    _pass = os.getenv("POSTGRES_PASSWORD", "")
+    _db   = os.getenv("POSTGRES_DB", "smmbot")
+    _db_url = f"postgresql+asyncpg://{_user}:{_pass}@{_host}:{_port}/{_db}"
+
+DATABASE_URL = _db_url
 
 engine = create_async_engine(
     DATABASE_URL,
